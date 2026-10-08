@@ -101,7 +101,8 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainWindow;
         Framework.Update += OnFrameworkUpdate;
 
-        Log.Information("FriendCompass 已加载，输入 /fcompass 打开窗口。");
+        DetectLifestream();
+        Log.Information($"FriendCompass 已加载，输入 /fcompass 打开窗口。Lifestream（跨服传送依赖）：{(LifestreamDetected ? "已检测到" : "未检测到")}");
     }
 
     private void OnCommand(string command, string arguments)
@@ -148,6 +149,30 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     public void ToggleMainWindow() => MainWindow.Toggle();
+
+    // ---------- Lifestream 依赖检测（跨服传送用） ----------
+
+    public bool LifestreamDetected { get; private set; }
+
+    public void DetectLifestream()
+    {
+        try
+        {
+            LifestreamDetected = PluginInterface.InstalledPlugins.Any(p =>
+                p.InternalName.Equals("Lifestream", StringComparison.OrdinalIgnoreCase) && p.IsLoaded);
+        }
+        catch
+        {
+            LifestreamDetected = false;
+        }
+    }
+
+    /// <summary>跨服传送前检测 Lifestream 是否可用（已安装且加载、IPC 可调用）。</summary>
+    public bool IsLifestreamAvailable()
+    {
+        DetectLifestream();
+        return LifestreamDetected;
+    }
 
     // ---------- 副本禁用 ----------
 

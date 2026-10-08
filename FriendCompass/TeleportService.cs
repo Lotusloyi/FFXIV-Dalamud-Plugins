@@ -1,9 +1,5 @@
-using System.Runtime.InteropServices;
 using Dalamud.Game.ClientState.Conditions;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
-using FFXIVClientStructs.FFXIV.Client.UI;
-using FFXIVClientStructs.FFXIV.Client.UI.Agent;
-using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace FriendCompass;
 
@@ -11,16 +7,14 @@ public enum TeleportStage
 {
     Idle,
     RefreshInfo,       // 好友位置未知：请求服务器刷新好友列表
-    OpenWorldTravel,   // 打开跨界传送界面
-    PickWorld,         // 在 WorldTravelSelect 中选择目标服务器
-    ConfirmTravel,     // 确认 YesNo
+    WorldTravelLifestream, // 通过 Lifestream IPC 执行跨界传送
     WaitArrival,       // 等待跨界传送完成
     ZoneTeleport,      // 以太水晶传送到好友所在地图
     Done,
 }
 
-/// <summary>点击追踪后的自动传送：跨服（同大区）→ 跨图（以太水晶）。</summary>
-public sealed unsafe class TeleportService
+/// <summary>点击追踪后的自动传送：跨服（依赖 Lifestream 插件）→ 跨图（以太水晶）。</summary>
+public sealed class TeleportService
 {
     private readonly Plugin plugin;
 
@@ -31,8 +25,8 @@ public sealed unsafe class TeleportService
     private long lastTick;
 
     // 各阶段超时（毫秒）
-    private const int StageTimeoutMs = 25000;
-    private const int ArrivalTimeoutMs = 150000;
+    private const int StageTimeoutMs = 30000;
+    private const int ArrivalTimeoutMs = 180000;
 
     public TeleportService(Plugin plugin) => this.plugin = plugin;
 
@@ -41,9 +35,7 @@ public sealed unsafe class TeleportService
     public string StatusText => Stage switch
     {
         TeleportStage.RefreshInfo => "正在获取好友位置…",
-        TeleportStage.OpenWorldTravel => "正在打开跨界传送…",
-        TeleportStage.PickWorld => "正在选择目标服务器…",
-        TeleportStage.ConfirmTravel => "等待确认跨界传送…",
+        TeleportStage.WorldTravelLifestream => "正在通过 Lifestream 跨界传送…",
         TeleportStage.WaitArrival => "跨界传送中…",
         TeleportStage.ZoneTeleport => "正在传送至好友所在地图…",
         _ => string.Empty,
@@ -82,7 +74,7 @@ public sealed unsafe class TeleportService
     {
         var localWorld = LocalWorld();
         if (localWorld != 0 && localWorld != friend.CurrentWorld)
-            return TeleportStage.OpenWorldTravel;
+            return TeleportStage.WorldTravelLifestream;
         return TeleportStage.ZoneTeleport;
     }
 
@@ -134,9 +126,7 @@ public sealed unsafe class TeleportService
             switch (Stage)
             {
                 case TeleportStage.RefreshInfo: TickRefreshInfo(); break;
-                case TeleportStage.OpenWorldTravel: TickOpenWorldTravel(); break;
-                case TeleportStage.PickWorld: TickPickWorld(); break;
-                case TeleportStage.ConfirmTravel: TickConfirmTravel(); break;
+                case TeleportStage.WorldTravelLifestream: TickWorldTravelLifestream(); break;
                 case TeleportStage.WaitArrival: TickWaitArrival(); break;
                 case TeleportStage.ZoneTeleport: TickZoneTeleport(); break;
             }
@@ -178,7 +168,7 @@ public sealed unsafe class TeleportService
         var localWorld = LocalWorld();
         if (localWorld != 0 && localWorld != target.CurrentWorld)
         {
-            EnterStage(TeleportStage.OpenWorldTravel);
+            EnterStage(TeleportStage.WorldTravelLifestream);
         }
         else
         {
@@ -186,65 +176,46 @@ public sealed unsafe class TeleportService
         }
     }
 
-    private void TickOpenWorldTravel()
+    /// <summary>通过 Lifestream IPC 执行跨界传送（Lifestream 会自动处理找水晶、对话、确认等流程）。</summary>
+    private void TickWorldTravelLifestream()
     {
         if (target == null) { Abort("目标丢失。"); return; }
-
-        var localPlayer = plugin.ObjectTable.LocalPlayer;
-        if (localPlayer == null)
-            return; // 等登录
-
-        if (plugin.PartyList.Length > 1)
-        {
-            Abort("跨界传送需要退出小队，请先 /leave 退队。");
-            return;
-        }
-        if (BusyOccupied())
-            return; // 等待空闲
-
-        var agent = AgentWorldTravel.Instance();
-        if (agent == null) { Abort("无法访问跨界传送代理。"); return; }
-
-        agent->SetupWorldTravelInfo((ushort)localPlayer.CurrentWorld.RowId, target.CurrentWorld);
-        agent->ShowAddon();
-        EnterStage(TeleportStage.PickWorld);
-    }
-
-    private void TickPickWorld()
-    {
-        if (target == null) { Abort("目标丢失。"); return; }
-
-        var addonPtr = plugin.GameGui.GetAddonByName("WorldTravelSelect").Address;
-        if (addonPtr == nint.Zero)
-            return; // 等待界面
-
-        var addon = (AtkUnitBase*)addonPtr;
-        if (!addon->IsVisible)
-            return;
 
         var worldName = plugin.GetWorldName(target.CurrentWorld);
-        var index = FindWorldIndex(worldName);
-        if (index < 0)
+
+        if (!plugin.IsLifestreamAvailable())
         {
-            Abort($"在跨界传送列表中找不到服务器「{worldName}」（可能与好友不在同一大区）。");
+            Abort($"跨服传送需要安装 Lifestream 插件（好友在 {worldName}，与你不属同一服务器）。请在卫月插件列表安装 Lifestream 后重试。");
             return;
         }
 
-        Fire(addon, 0, index + 2);
-        EnterStage(TeleportStage.ConfirmTravel);
-    }
+        try
+        {
+            var canVisit = plugin.PluginInterface
+                .GetIpcSubscriber<string, bool>("Lifestream.CanVisitSameDC")
+                .InvokeFunc(worldName);
+            if (!canVisit)
+            {
+                Abort($"Lifestream 报告无法前往「{worldName}」（需要与好友在同一大区，且不在小队 / 副本中）。");
+                return;
+            }
 
-    private void TickConfirmTravel()
-    {
-        var addonPtr = plugin.GameGui.GetAddonByName("SelectYesno").Address;
-        if (addonPtr == nint.Zero)
-            return;
-        var addon = (AtkUnitBase*)addonPtr;
-        if (!addon->IsVisible)
-            return;
+            var started = plugin.PluginInterface
+                .GetIpcSubscriber<string, bool>("Lifestream.ChangeWorld")
+                .InvokeFunc(worldName);
+            if (!started)
+            {
+                Abort($"Lifestream 未能开始跨界传送（可能正在忙或条件不满足），请查看 Lifestream 设置。");
+                return;
+            }
 
-        Fire(addon, 0); // 确认「是」
-        EnterStage(TeleportStage.WaitArrival);
+            EnterStage(TeleportStage.WaitArrival);
+        }
+        catch (Exception e)
+        {
+            plugin.Log.Warning($"Lifestream IPC 调用失败：{e.Message}");
+            Abort("Lifestream IPC 调用失败，请确认 Lifestream 已安装并启用。");
+        }
     }
 
     private void TickWaitArrival()
@@ -260,7 +231,7 @@ public sealed unsafe class TeleportService
             EnterStage(TeleportStage.ZoneTeleport);
     }
 
-    private void TickZoneTeleport()
+    private unsafe void TickZoneTeleport()
     {
         if (target == null) { Abort("目标丢失。"); return; }
 
@@ -324,43 +295,5 @@ public sealed unsafe class TeleportService
         return c[ConditionFlag.Occupied] || c[ConditionFlag.InCombat] ||
                c[ConditionFlag.Casting] || c[ConditionFlag.BetweenAreas] ||
                c[ConditionFlag.Mounted] || c[ConditionFlag.Jumping];
-    }
-
-    /// <summary>从 WorldTravelSelect 的字符串数组中找目标服务器序号（0 起），找不到返回 -1。</summary>
-    private static int FindWorldIndex(string worldName)
-    {
-        var atkModule = RaptureAtkModule.Instance();
-        if (atkModule == null)
-            return -1;
-        var arr = atkModule->AtkArrayDataHolder.StringArrays[(int)StringArrayType.WorldTranslate];
-        if (arr == null)
-            return -1;
-
-        var index = 0;
-        for (var i = 3; i <= 10; i++)
-        {
-            var p = arr->StringArray[i];
-            if (!p.HasValue)
-                break;
-            var name = Marshal.PtrToStringUTF8((nint)p.Value)?.Trim();
-            if (string.IsNullOrEmpty(name))
-                break;
-            if (name == worldName)
-                return index;
-            index++;
-        }
-        return -1;
-    }
-
-    /// <summary>向 Addon 发送回调（等效 ECommons Callback.Fire 的 int 参数版本）。</summary>
-    private static void Fire(AtkUnitBase* addon, params int[] values)
-    {
-        var atkValues = stackalloc AtkValue[values.Length];
-        for (var i = 0; i < values.Length; i++)
-        {
-            atkValues[i].Type = AtkValueType.Int;
-            atkValues[i].Int = values[i];
-        }
-        addon->FireCallback((uint)values.Length, atkValues, true);
     }
 }

@@ -50,17 +50,46 @@ public unsafe class OverlayWindow : Window
             DrawMapMarker(drawList, character!, localPlayer);
     }
 
-    // ---------- 悬浮窗（只显示同图好友距离，不含方向箭头） ----------
+    // ---------- 悬浮窗（方向箭头 + 同图好友距离） ----------
 
     private void DrawCompass(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter target,
         Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter localPlayer)
     {
+        var gameGui = plugin.GameGui;
+
+        gameGui.WorldToScreen(localPlayer.Position, out var playerScreen, out _);
+        var ok = gameGui.WorldToScreen(target.Position, out var targetScreen, out var behind);
+
+        // 指向角度：以本地玩家的屏幕位置为原点；好友在身后时翻转 180°
+        var angle = 0f;
+        if (ok)
+        {
+            angle = MathF.Atan2(targetScreen.Y - playerScreen.Y, targetScreen.X - playerScreen.X);
+            if (behind)
+                angle += MathF.PI;
+        }
+
+        var center = ImGui.GetWindowPos() + ImGui.GetWindowSize() / 2f;
+        var drawList = ImGui.GetWindowDrawList();
+        var col = ImGui.ColorConvertFloat4ToU32(ColorMain);
+
+        DrawArrow(drawList, center + new Vector2(0, -8f), angle, 14f, col);
+
         var dist = Vector3.Distance(localPlayer.Position, target.Position);
         var text = $"{target.Name.TextValue}  {dist:F0} 米";
         var textSize = ImGui.CalcTextSize(text);
-        var center = ImGui.GetWindowPos() + ImGui.GetWindowSize() / 2f;
-        ImGui.GetWindowDrawList().AddText(center - textSize / 2f,
-            ImGui.ColorConvertFloat4ToU32(ColorMain), text);
+        drawList.AddText(center + new Vector2(-textSize.X / 2f, 12f), col, text);
+    }
+
+    private static void DrawArrow(ImDrawListPtr drawList, Vector2 center, float angle, float size, uint col)
+    {
+        var dir = new Vector2(MathF.Cos(angle), MathF.Sin(angle));
+        var perp = new Vector2(-dir.Y, dir.X);
+        var tip = center + dir * size;
+        var base1 = center - dir * (size * 0.6f) + perp * (size * 0.5f);
+        var base2 = center - dir * (size * 0.6f) - perp * (size * 0.5f);
+        drawList.AddTriangleFilled(tip, base1, base2, col);
+        drawList.AddCircle(center, size * 0.9f, col, 0, 1.5f);
     }
 
     // ---------- 好友头顶世界标记 ----------

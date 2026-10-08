@@ -27,8 +27,16 @@ public class MainWindow : Window
         if (now - lastRefresh > 2000)
         {
             lastRefresh = now;
+            plugin.DetectLifestream();
             friends = plugin.Friends.GetFriends();
             plugin.RefreshTracked();
+        }
+
+        if (!plugin.LifestreamDetected)
+        {
+            ImGui.TextColored(new Vector4(0.9f, 0.75f, 0.3f, 1f),
+                "⚠ 未检测到 Lifestream：跨服自动传送不可用（请在卫月插件列表安装 Lifestream）");
+            ImGui.Separator();
         }
 
         DrawTrackedCard();
@@ -154,6 +162,16 @@ public class MainWindow : Window
         var s = search;
         if (ImGui.InputTextWithHint("##search", "搜索好友…", ref s, 64))
             search = s;
+
+        // 主动向服务器请求刷新好友列表（等效打开游戏好友列表点刷新）
+        ImGui.SameLine();
+        if (ImGui.SmallButton("刷新"))
+        {
+            plugin.Friends.RequestRefresh();
+            lastRefresh = 0; // 稍后自动重新拉取
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled($"共 {friends.Count} 位好友");
 
         using var table = ImRaii.Table("friend_list", 6,
             ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollY);

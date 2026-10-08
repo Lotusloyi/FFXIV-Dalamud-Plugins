@@ -8,14 +8,29 @@
 | ---- | ---- | ---- | -------- |
 | [FateTracker](FateTracker/) | 简洁的 FATE 追踪器：实时显示当前地图 FATE 的名称 / 等级 / 进度 / 剩余时间 / 距离，新 FATE 出现时聊天栏提醒 + 可选提示音 | `/fate` | [v1.0.1](../../releases/tag/v1.0.1) |
 | [FishClock](FishClock/) | 游戏内钓鱼时钟：实时显示限时鱼 / 天气鱼的开放窗口与倒计时、当前地图天气预报，窗口开启自动提醒（数据来自鱼糕） | `/fishclock` | [v1.1.0](../../releases/tag/v1.1.0) |
-| [FriendCompass](FriendCompass/) | 好友罗盘：查询好友所在地区，悬浮窗箭头指向同图好友位置并显示距离，野外大地图标记好友位置，副本内自动禁用 | `/fcompass` | [v1.2.0](../../releases/tag/v1.2.0) |
+| [FriendCompass](FriendCompass/) | 好友罗盘：查询好友所在地区，悬浮窗箭头指向同图好友位置并显示距离，野外大地图标记好友位置，副本内自动禁用（跨服传送需 [Lifestream](https://github.com/NightmareXIV/Lifestream)） | `/fcompass` | [v1.3.0](../../releases/tag/v1.3.0) |
 
 ## 安装方法（所有插件通用）
 
+### 方式一：自定义插件源（推荐，无开发警告、可自动更新）
+
+1. 游戏内打开卫月设置（`/xlsettings`）→ **实验**（Experimental）→ **自定义插件仓库**（Custom Plugin Repositories）
+2. 添加仓库地址：
+
+   ```
+   https://raw.githubusercontent.com/Lotusloyi/FFXIV-Dalamud-Plugins/master/pluginmaster.json
+   ```
+
+3. 保存后打开插件安装器（`/xlplugins`），在「可用插件」中搜索插件名安装，之后每次发布新版本会自动提示更新
+
+### 方式二：本地导入
+
 1. 到 [Releases](../../releases) 下载对应插件的 `latest.zip` 并解压，得到 `<插件名>.dll` 和 `<插件名>.json`
-2. 游戏内打开卫月设置（`/xlsettings`）→ **实验** 选项卡
+2. 打开卫月设置（`/xlsettings`）→ **实验** 选项卡
 3. 在「开发插件位置 / Dev Plugin Locations」中添加该 DLL 的完整路径
 4. 打开插件安装器（`/xlplugins`）→ **开发工具 → 已安装的开发插件**，启用即可
+
+> 注意：方式二属于开发插件导入，插件列表会显示「开发警告」，改用方式一的自定义源即可消除。
 
 ## 开发
 
