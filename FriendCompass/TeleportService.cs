@@ -10,6 +10,7 @@ namespace FriendCompass;
 public enum TeleportStage
 {
     Idle,
+    RefreshInfo,       // 好友位置未知：请求服务器刷新好友列表
     OpenWorldTravel,   // 打开跨界传送界面
     PickWorld,         // 在 WorldTravelSelect 中选择目标服务器
     ConfirmTravel,     // 确认 YesNo
@@ -39,6 +40,7 @@ public sealed unsafe class TeleportService
 
     public string StatusText => Stage switch
     {
+        TeleportStage.RefreshInfo => "正在获取好友位置…",
         TeleportStage.OpenWorldTravel => "正在打开跨界传送…",
         TeleportStage.PickWorld => "正在选择目标服务器…",
         TeleportStage.ConfirmTravel => "等待确认跨界传送…",
@@ -54,9 +56,9 @@ public sealed unsafe class TeleportService
             plugin.ChatGui.Print("[FriendCompass] 正在传送中，请稍候。");
             return;
         }
-        if (!friend.Online || friend.Location == 0)
+        if (!friend.Online)
         {
-            plugin.ChatGui.Print($"[FriendCompass] 好友 {friend.Name} 不在线或位置未知，无法传送。");
+            plugin.ChatGui.Print($"[FriendCompass] 好友 {friend.Name} 不在线，无法传送。");
             return;
         }
         if (plugin.DisabledByDuty)
@@ -66,14 +68,41 @@ public sealed unsafe class TeleportService
         }
 
         target = friend;
-        ushort localWorld = 0;
-        if (plugin.ObjectTable.LocalPlayer is { } lp0) localWorld = (ushort)lp0.CurrentWorld.RowId;
-        Stage = localWorld != 0 && localWorld != friend.CurrentWorld
-            ? TeleportStage.OpenWorldTravel
-            : TeleportStage.ZoneTeleport;
+        Stage = friend.Location == 0 ? TeleportStage.RefreshInfo : PickStartStage(friend);
         stageStartTick = Environment.TickCount64;
 
-        plugin.ChatGui.Print($"[FriendCompass] 开始前往好友 {friend.Name} 所在位置（{plugin.GetWorldName(friend.CurrentWorld)} · {plugin.GetTerritoryName(friend.Location)}）…");
+        if (Stage == TeleportStage.RefreshInfo)
+            plugin.Friends.RequestRefresh();
+
+        plugin.ChatGui.Print($"[FriendCompass] 开始前往好友 {friend.Name} 所在位置（{plugin.GetWorldName(friend.CurrentWorld)}）…");
+    }
+
+    /// <summary>根据好友与本地玩家的世界关系决定起点阶段。</summary>
+    private TeleportStage PickStartStage(FriendSnapshot friend)
+    {
+        var localWorld = LocalWorld();
+        if (localWorld != 0 && localWorld != friend.CurrentWorld)
+            return TeleportStage.OpenWorldTravel;
+        return TeleportStage.ZoneTeleport;
+    }
+
+    private ushort LocalWorld()
+    {
+        if (plugin.ObjectTable.LocalPlayer is { } lp)
+            return (ushort)lp.CurrentWorld.RowId;
+        return 0;
+    }
+
+    /// <summary>重新从好友列表读取目标好友的最新数据（主要是位置字段）。</summary>
+    private bool RefreshTargetInfo()
+    {
+        if (target == null)
+            return false;
+        var fresh = plugin.Friends.GetFriends().FirstOrDefault(f => f.ContentId == target.ContentId);
+        if (fresh == null || !fresh.Online)
+            return false;
+        target.Location = fresh.Location;
+        return true;
     }
 
     public void Cancel()
@@ -104,6 +133,7 @@ public sealed unsafe class TeleportService
         {
             switch (Stage)
             {
+                case TeleportStage.RefreshInfo: TickRefreshInfo(); break;
                 case TeleportStage.OpenWorldTravel: TickOpenWorldTravel(); break;
                 case TeleportStage.PickWorld: TickPickWorld(); break;
                 case TeleportStage.ConfirmTravel: TickConfirmTravel(); break;
@@ -132,6 +162,29 @@ public sealed unsafe class TeleportService
     }
 
     // ---------- 阶段实现 ----------
+
+    private void TickRefreshInfo()
+    {
+        if (target == null) { Abort("目标丢失。"); return; }
+
+        RefreshTargetInfo();
+        if (target.Location != 0)
+        {
+            EnterStage(PickStartStage(target));
+            return;
+        }
+
+        // 位置一直未知：好友可能设置了隐藏位置信息。不同世界仍可先跨界，到步后再取位置。
+        var localWorld = LocalWorld();
+        if (localWorld != 0 && localWorld != target.CurrentWorld)
+        {
+            EnterStage(TeleportStage.OpenWorldTravel);
+        }
+        else
+        {
+            Abort($"好友 {target.Name} 隐藏了位置信息，无法确定所在地图（可手动传送后使用悬浮窗）。");
+        }
+    }
 
     private void TickOpenWorldTravel()
     {
@@ -214,6 +267,15 @@ public sealed unsafe class TeleportService
         var localPlayer = plugin.ObjectTable.LocalPlayer;
         if (localPlayer == null || BusyOccupied())
             return;
+
+        // 跨界后好友位置可能才有数据；仍未知则中止
+        if (target.Location == 0)
+            RefreshTargetInfo();
+        if (target.Location == 0)
+        {
+            Abort($"好友 {target.Name} 隐藏了位置信息，无法确定所在地图（已到达好友所在服务器）。");
+            return;
+        }
 
         if (plugin.ClientState.TerritoryType == target.Location)
         {

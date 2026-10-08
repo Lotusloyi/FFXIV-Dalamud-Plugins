@@ -9,8 +9,8 @@ public sealed class FriendSnapshot
     public required string Name;
     public required ushort HomeWorld;
     public required ushort CurrentWorld;
-    /// <summary>TerritoryType 行 ID（好友所在区域），0 表示未知 / 离线。</summary>
-    public required ushort Location;
+    /// <summary>TerritoryType 行 ID（好友所在区域），0 表示未知 / 被隐藏。传送过程中会被刷新。</summary>
+    public ushort Location;
     public required byte Job;
     public required bool Online;
 
@@ -56,5 +56,20 @@ public sealed class FriendService
             // 读取失败（如游戏未完全登录）返回空列表即可
         }
         return list;
+    }
+
+    /// <summary>向服务器请求刷新好友列表（填充所在地区等字段）。</summary>
+    public unsafe void RequestRefresh()
+    {
+        try
+        {
+            var proxy = InfoProxyFriendList.Instance();
+            if (proxy != null)
+                proxy->RequestData();
+        }
+        catch
+        {
+            // 忽略
+        }
     }
 }

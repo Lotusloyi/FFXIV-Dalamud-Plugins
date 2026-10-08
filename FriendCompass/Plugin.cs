@@ -301,7 +301,7 @@ public sealed class Plugin : IDalamudPlugin
         string name;
         try
         {
-            name = DataManager.GetExcelSheet<ClassJob>().GetRow(jobId).Abbreviation.ExtractText();
+            name = DataManager.GetExcelSheet<ClassJob>().GetRow(jobId).Name.ExtractText();
         }
         catch
         {

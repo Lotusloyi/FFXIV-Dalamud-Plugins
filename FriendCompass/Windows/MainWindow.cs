@@ -90,6 +90,11 @@ public class MainWindow : Window
             ImGui.TextColored(new Vector4(0.35f, 0.85f, 0.45f, 1f),
                 $"同图 · 距离 {dist:F0} 米");
         }
+        else if (tracked.Location != 0 && tracked.Location == plugin.ClientState.TerritoryType)
+        {
+            // 同图但好友在约 100 米同步范围外，游戏不提供精确位置
+            ImGui.TextColored(new Vector4(0.9f, 0.85f, 0.3f, 1f), "同图 · 超出同步范围（约 100 米）");
+        }
         else
         {
             ImGui.Text($"位于：{plugin.GetTerritoryName(tracked.Location)}");
@@ -111,7 +116,7 @@ public class MainWindow : Window
         var changed = false;
 
         var v = config.ShowOverlay;
-        if (ImGui.Checkbox("悬浮罗盘", ref v)) { config.ShowOverlay = v; changed = true; }
+        if (ImGui.Checkbox("悬浮距离窗", ref v)) { config.ShowOverlay = v; changed = true; }
         ImGui.SameLine();
         v = config.ShowWorldMarker;
         if (ImGui.Checkbox("头顶标记", ref v)) { config.ShowWorldMarker = v; changed = true; }
