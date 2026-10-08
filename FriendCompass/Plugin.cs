@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects.SubKinds;
+using Dalamud.Game.ClientState.Party;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
@@ -29,10 +30,12 @@ public sealed class Plugin : IDalamudPlugin
     public IFramework Framework { get; }
     public IDataManager DataManager { get; }
     public IChatGui ChatGui { get; }
+    public IPartyList PartyList { get; }
     public IPluginLog Log { get; }
 
     public Configuration Configuration { get; }
     public FriendService Friends { get; } = new();
+    public TeleportService Teleporter { get; }
 
     private readonly WindowSystem windowSystem = new("FriendCompass");
     public readonly MainWindow MainWindow;
@@ -64,6 +67,7 @@ public sealed class Plugin : IDalamudPlugin
         IFramework framework,
         IDataManager dataManager,
         IChatGui chatGui,
+        IPartyList partyList,
         IPluginLog log)
     {
         PluginInterface = pluginInterface;
@@ -75,9 +79,11 @@ public sealed class Plugin : IDalamudPlugin
         Framework = framework;
         DataManager = dataManager;
         ChatGui = chatGui;
+        PartyList = partyList;
         Log = log;
 
         Configuration = Configuration.Load(pluginInterface);
+        Teleporter = new TeleportService(this);
 
         MainWindow = new MainWindow(this);
         Overlay = new OverlayWindow(this);
@@ -126,6 +132,10 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.TrackedName = friend.Name;
         Configuration.Save(PluginInterface);
         RefreshTracked(force: true);
+
+        // 点击追踪 = 追踪 + 自动传送到好友所在服务器 / 地图
+        if (Configuration.TeleportOnTrack)
+            Teleporter.Start(friend);
     }
 
     public void Untrack()
@@ -153,6 +163,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        // 传送状态机（内部自带 500ms 节流）
+        Teleporter.Tick();
+
         // 限制刷新频率，避免每帧扫描好友列表与对象表
         var now = Environment.TickCount64;
         if (now - lastRefreshTick < 1000)
@@ -202,6 +215,11 @@ public sealed class Plugin : IDalamudPlugin
                 lastTrackedLocation = target.Location;
                 lastTrackedOnline = target.Online;
             }
+
+            // 悬浮窗激活：WindowSystem 只绘制 IsOpen 的窗口，必须在这里管理
+            Overlay.IsOpen = !DisabledByDuty &&
+                             target is { Online: true } &&
+                             TrackedCharacter != null;
         }
         catch
         {

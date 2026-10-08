@@ -56,6 +56,19 @@ public class MainWindow : Window
             return;
         }
 
+        // 传送进行中优先显示进度
+        var statusText = plugin.Teleporter.StatusText;
+        if (plugin.Teleporter.Busy)
+        {
+            ImGui.TextColored(new Vector4(0.95f, 0.75f, 0.3f, 1f), $"➤ {statusText}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("取消传送"))
+                plugin.Teleporter.Cancel();
+            ImGui.SameLine();
+            ImGui.TextDisabled($"目标：{tracked.Name}");
+            return;
+        }
+
         var statusCol = tracked.Online ? new Vector4(0.35f, 0.85f, 0.45f, 1f) : new Vector4(0.6f, 0.6f, 0.6f, 1f);
         ImGui.TextColored(statusCol, tracked.Online ? "●" : "○");
         ImGui.SameLine();
@@ -83,6 +96,9 @@ public class MainWindow : Window
         }
 
         ImGui.SameLine();
+        if (ImGui.SmallButton("传送"))
+            plugin.Teleporter.Start(tracked);
+        ImGui.SameLine();
         if (ImGui.SmallButton("停止追踪"))
             plugin.Untrack();
     }
@@ -108,6 +124,9 @@ public class MainWindow : Window
 
         v = config.AutoTrackSameZone;
         if (ImGui.Checkbox("自动追踪同图好友", ref v)) { config.AutoTrackSameZone = v; changed = true; }
+        ImGui.SameLine();
+        v = config.TeleportOnTrack;
+        if (ImGui.Checkbox("追踪时自动传送", ref v)) { config.TeleportOnTrack = v; changed = true; }
         ImGui.SameLine();
         v = config.AlertOnZoneChange;
         if (ImGui.Checkbox("跨图提醒", ref v)) { config.AlertOnZoneChange = v; changed = true; }

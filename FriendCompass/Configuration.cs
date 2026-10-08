@@ -20,6 +20,9 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>副本（任务）内自动禁用指向与标记。</summary>
     public bool DisableInDuty { get; set; } = true;
 
+    /// <summary>点击追踪时自动传送到好友所在服务器 / 地图。</summary>
+    public bool TeleportOnTrack { get; set; } = true;
+
     /// <summary>自动追踪同图（同区域）的在线好友。</summary>
     public bool AutoTrackSameZone { get; set; }
 

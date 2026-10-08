@@ -25,16 +25,13 @@ public unsafe class OverlayWindow : Window
 
     public override void Draw()
     {
+        // 可见性由 Plugin.RefreshTracked 统一管理（WindowSystem 只绘制 IsOpen 的窗口）
         var config = plugin.Configuration;
-        var disabled = plugin.DisabledByDuty;
         var target = plugin.TrackedFriend;
         var character = plugin.TrackedCharacter;
         var localPlayer = plugin.ObjectTable.LocalPlayer;
 
-        var active = !disabled && target != null && character != null && localPlayer != null;
-        if (IsOpen != active)
-            IsOpen = active;
-        if (!active)
+        if (target == null || character == null || localPlayer == null)
             return;
 
         var anythingVisible = config.ShowOverlay || config.ShowWorldMarker || config.ShowMapMarker;
