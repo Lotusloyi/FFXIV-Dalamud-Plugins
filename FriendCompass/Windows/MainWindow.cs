@@ -162,6 +162,9 @@ public class MainWindow : Window
         v = config.TeleportOnTrack;
         if (ImGui.Checkbox("追踪时自动传送", ref v)) { config.TeleportOnTrack = v; changed = true; }
         ImGui.SameLine();
+        v = config.AutoSwitchInstance;
+        if (ImGui.Checkbox("同图未找到时自动切换分流", ref v)) { config.AutoSwitchInstance = v; changed = true; }
+        ImGui.SameLine();
         v = config.AlertOnZoneChange;
         if (ImGui.Checkbox("跨图提醒", ref v)) { config.AlertOnZoneChange = v; changed = true; }
         if (config.AlertOnZoneChange)

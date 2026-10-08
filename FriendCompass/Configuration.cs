@@ -23,6 +23,9 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>点击追踪时自动传送到好友所在服务器 / 地图。</summary>
     public bool TeleportOnTrack { get; set; } = true;
 
+    /// <summary>追踪的好友同图但未找到（疑似分流不同）时自动切换分流查找。</summary>
+    public bool AutoSwitchInstance { get; set; } = true;
+
     /// <summary>自动追踪同图（同区域）的在线好友。</summary>
     public bool AutoTrackSameZone { get; set; }
 

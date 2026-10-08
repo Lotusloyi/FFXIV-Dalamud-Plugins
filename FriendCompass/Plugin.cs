@@ -204,6 +204,93 @@ public sealed class Plugin : IDalamudPlugin
             return;
         lastRefreshTick = now;
         RefreshTracked();
+        TickAutoInstanceSwitch();
+    }
+
+    // ---------- 自动切换分流 ----------
+
+    private long lastAutoSwitchTick;
+    private int autoSwitchCount;
+    private ulong autoSwitchTargetId;
+    private bool autoSwitchExhausted;
+
+    // 到达新分流后等待对象表与好友数据刷新的 settle 时间
+    private const int AutoSwitchSettleMs = 8000;
+    private const int AutoSwitchMaxAttempts = 9;
+
+    private void TickAutoInstanceSwitch()
+    {
+        if (!Configuration.AutoSwitchInstance)
+            return;
+        if (DisabledByDuty || Teleporter.Busy || InstanceSwitcher.Busy)
+            return;
+
+        var target = TrackedFriend;
+        if (target is not { Online: true })
+        {
+            ResetAutoSwitch();
+            return;
+        }
+
+        if (target.ContentId != autoSwitchTargetId)
+        {
+            // 换了追踪目标，重新开始计数
+            autoSwitchTargetId = target.ContentId;
+            autoSwitchCount = 0;
+            autoSwitchExhausted = false;
+            lastAutoSwitchTick = Environment.TickCount64;
+        }
+
+        if (TrackedCharacter != null)
+        {
+            // 找到好友了：重置尝试计数（保留目标，避免同图好友短暂超出范围后从头计）
+            autoSwitchCount = 0;
+            autoSwitchExhausted = false;
+            return;
+        }
+
+        var territory = ClientState.TerritoryType;
+        if (territory == 0 || target.Location != territory || ObjectTable.LocalPlayer == null)
+        {
+            ResetAutoSwitch();
+            return;
+        }
+
+        if (!InstanceService.IsInstancedArea())
+            return; // 非分流地图，好友只是距离较远，切分流无意义
+
+        var now = Environment.TickCount64;
+        if (now - lastAutoSwitchTick < AutoSwitchSettleMs)
+            return;
+
+        if (autoSwitchExhausted || autoSwitchCount >= AutoSwitchMaxAttempts)
+        {
+            if (!autoSwitchExhausted)
+            {
+                autoSwitchExhausted = true;
+                ChatGui.Print($"[FriendCompass] 已自动尝试 {AutoSwitchMaxAttempts} 个分流仍未找到 {target.Name}，停止自动切换（可手动点「切换分流」继续尝试）。");
+            }
+            return;
+        }
+
+        if (InstanceSwitcher.FindAetheryte() == null)
+        {
+            ChatGui.Print("[FriendCompass] 自动切换分流需要靠近任意以太水晶（约 11 米内）。");
+            lastAutoSwitchTick = now; // 8 秒内不重复提示
+            return;
+        }
+
+        var cur = (int)InstanceSwitcher.CurrentInstance();
+        InstanceSwitcher.Start(cur is >= 1 and <= 8 ? cur + 1 : 1);
+        lastAutoSwitchTick = now;
+        autoSwitchCount++;
+    }
+
+    private void ResetAutoSwitch()
+    {
+        autoSwitchTargetId = 0;
+        autoSwitchCount = 0;
+        autoSwitchExhausted = false;
     }
 
     public void RefreshTracked(bool force = false)

@@ -60,6 +60,19 @@ public sealed unsafe class InstanceService
     /// <summary>当前地图的分流编号（0 = 非分流地图）。</summary>
     public uint CurrentInstance() => plugin.ClientState.Instance;
 
+    /// <summary>当前地图是否为分流地图。</summary>
+    public static bool IsInstancedArea()
+    {
+        try
+        {
+            return UIState.Instance()->PublicInstance.IsInstancedArea();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public void Start(int instance)
     {
         if (Busy)
@@ -117,7 +130,7 @@ public sealed unsafe class InstanceService
         aetheryte = null;
     }
 
-    private Dalamud.Game.ClientState.Objects.Types.IGameObject? FindAetheryte()
+    public Dalamud.Game.ClientState.Objects.Types.IGameObject? FindAetheryte()
     {
         var localPlayer = plugin.ObjectTable.LocalPlayer;
         if (localPlayer == null)
