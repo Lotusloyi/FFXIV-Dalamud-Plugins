@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Dalamud.Game.ClientState.Conditions;
+using Dalamud.Game.ClientState.Objects;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Party;
 using Dalamud.Game.Command;
@@ -31,11 +32,13 @@ public sealed class Plugin : IDalamudPlugin
     public IDataManager DataManager { get; }
     public IChatGui ChatGui { get; }
     public IPartyList PartyList { get; }
+    public ITargetManager Targets { get; }
     public IPluginLog Log { get; }
 
     public Configuration Configuration { get; }
     public FriendService Friends { get; } = new();
     public TeleportService Teleporter { get; }
+    public InstanceService InstanceSwitcher { get; }
 
     private readonly WindowSystem windowSystem = new("FriendCompass");
     public readonly MainWindow MainWindow;
@@ -68,6 +71,7 @@ public sealed class Plugin : IDalamudPlugin
         IDataManager dataManager,
         IChatGui chatGui,
         IPartyList partyList,
+        ITargetManager targets,
         IPluginLog log)
     {
         PluginInterface = pluginInterface;
@@ -80,10 +84,12 @@ public sealed class Plugin : IDalamudPlugin
         DataManager = dataManager;
         ChatGui = chatGui;
         PartyList = partyList;
+        Targets = targets;
         Log = log;
 
         Configuration = Configuration.Load(pluginInterface);
         Teleporter = new TeleportService(this);
+        InstanceSwitcher = new InstanceService(this);
 
         MainWindow = new MainWindow(this);
         Overlay = new OverlayWindow(this);
@@ -190,6 +196,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         // 传送状态机（内部自带 500ms 节流）
         Teleporter.Tick();
+        InstanceSwitcher.Tick();
 
         // 限制刷新频率，避免每帧扫描好友列表与对象表
         var now = Environment.TickCount64;

@@ -77,6 +77,18 @@ public class MainWindow : Window
             return;
         }
 
+        // 分流切换进行中显示进度
+        if (plugin.InstanceSwitcher.Busy)
+        {
+            ImGui.TextColored(new Vector4(0.95f, 0.75f, 0.3f, 1f), $"➤ {plugin.InstanceSwitcher.StatusText}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("取消"))
+                plugin.InstanceSwitcher.Cancel();
+            ImGui.SameLine();
+            ImGui.TextDisabled($"目标：{tracked.Name}");
+            return;
+        }
+
         var statusCol = tracked.Online ? new Vector4(0.35f, 0.85f, 0.45f, 1f) : new Vector4(0.6f, 0.6f, 0.6f, 1f);
         ImGui.TextColored(statusCol, tracked.Online ? "●" : "○");
         ImGui.SameLine();
@@ -100,8 +112,17 @@ public class MainWindow : Window
         }
         else if (tracked.Location != 0 && tracked.Location == plugin.ClientState.TerritoryType)
         {
-            // 同图但好友在约 100 米同步范围外，游戏不提供精确位置
+            // 同图但好友在约 100 米同步范围外，游戏不提供精确位置——常见原因是分流不同
             ImGui.TextColored(new Vector4(0.9f, 0.85f, 0.3f, 1f), "同图 · 超出同步范围（约 100 米）");
+            ImGui.SameLine();
+            ImGui.TextDisabled($"当前分流 {plugin.InstanceSwitcher.CurrentInstance()}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("切换分流"))
+            {
+                // 一键切到下一个分流，重复点击可逐个尝试直到找到好友
+                var cur = (int)plugin.InstanceSwitcher.CurrentInstance();
+                plugin.InstanceSwitcher.Start(cur is >= 1 and <= 8 ? cur + 1 : 1);
+            }
         }
         else
         {
