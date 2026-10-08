@@ -1,9 +1,8 @@
 using System.Numerics;
-using System.Text;
 using Dalamud.Game.ClientState.Conditions;
-using Dalamud.Game.ClientState.Objects.Enums;
+using ObjectKind = Dalamud.Game.ClientState.Objects.Enums.ObjectKind;
+using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.Text.SeStringHandling;
-using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Memory;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
@@ -16,112 +15,85 @@ namespace FriendCompass;
 public enum InstanceStage
 {
     Idle,
-    TargetAetheryte,   // 选中以太水晶
-    Interact,          // 与水晶交互，打开菜单
-    WaitMenu,          // 等待 SelectString 菜单出现
-    PickInstance,      // 在菜单中选择目标分流
+    TargetAetheryte,
+    Interact,
+    WaitMenu,
+    PickTravel,
+    PickInstance,
+    WaitArrival,
     Done,
 }
 
-/// <summary>
-/// 一键切换分流：与 Lifestream 相同的实现思路——选中附近的以太水晶，
-/// 在「Travel to Instanced Area」菜单中点选目标分流。
-/// </summary>
 public sealed unsafe class InstanceService
 {
-    private readonly Plugin plugin;
-
-    // 分流数字对应的特殊字符（与 Lifestream 一致：- 代表分流 1-9）
-    private static readonly char[] InstanceNumbers = "\0".ToCharArray();
-
     private const float AetheryteMaxDistance = 11f;
     private const int StageTimeoutMs = 15000;
-
-    public InstanceStage Stage { get; private set; } = InstanceStage.Idle;
-
+    private readonly Plugin plugin;
+    private IGameObject? aetheryte;
     private int targetInstance;
-    private Dalamud.Game.ClientState.Objects.Types.IGameObject? aetheryte;
+    private uint startTerritory;
+    private uint choicesTerritory;
+    private ushort choicesWorld;
     private long stageStartTick;
     private long lastTick;
+    private string lastMenu = string.Empty;
+    private string previousMenu = string.Empty;
+    private bool sawLoading;
+    private int menuSamples;
+    private int[] availableInstances = [];
 
     public InstanceService(Plugin plugin) => this.plugin = plugin;
-
+    public InstanceStage Stage { get; private set; }
     public bool Busy => Stage is not (InstanceStage.Idle or InstanceStage.Done);
-
+    public bool LastAttemptFailed { get; private set; }
+    public string LastError { get; private set; } = string.Empty;
+    public IReadOnlyList<int> AvailableInstances =>
+        choicesTerritory == plugin.ClientState.TerritoryType &&
+        choicesWorld == plugin.ObjectTable.LocalPlayer?.CurrentWorld.RowId ? availableInstances : [];
     public string StatusText => Stage switch
     {
         InstanceStage.TargetAetheryte => "正在选中以太水晶…",
         InstanceStage.Interact => "正在打开以太水晶菜单…",
-        InstanceStage.WaitMenu => "等待分流菜单…",
-        InstanceStage.PickInstance => $"正在切换到分流 {targetInstance}…",
+        InstanceStage.WaitMenu or InstanceStage.PickTravel => "正在打开切换副本区菜单…",
+        InstanceStage.PickInstance => $"正在选择分流 {targetInstance}…",
+        InstanceStage.WaitArrival => $"等待到达分流 {targetInstance}…",
         _ => string.Empty,
     };
 
-    /// <summary>当前地图的分流编号（0 = 非分流地图）。</summary>
-    public uint CurrentInstance() => plugin.ClientState.Instance;
-
-    /// <summary>当前地图是否为分流地图。</summary>
-    public static bool IsInstancedArea()
+    public uint CurrentInstance()
     {
-        try
-        {
-            return UIState.Instance()->PublicInstance.IsInstancedArea();
-        }
-        catch
-        {
-            return false;
-        }
+        var state = UIState.Instance();
+        return state == null ? plugin.ClientState.Instance : state->PublicInstance.InstanceId;
     }
 
-    public void Start(int instance)
+    public static bool IsInstancedArea()
     {
-        if (Busy)
-        {
-            plugin.ChatGui.Print("[FriendCompass] 正在切换分流，请稍候。");
-            return;
-        }
-        if (instance < 1 || instance > 9)
-        {
-            plugin.ChatGui.Print("[FriendCompass] 分流编号需在 1-9 之间。");
-            return;
-        }
-        if (plugin.DisabledByDuty)
-        {
-            plugin.ChatGui.Print("[FriendCompass] 副本内无法切换分流。");
-            return;
-        }
+        var state = UIState.Instance();
+        return state != null && state->PublicInstance.IsInstancedArea();
+    }
 
-        var c = plugin.Condition;
-        if (c[ConditionFlag.InCombat] || c[ConditionFlag.Casting] || c[ConditionFlag.BetweenAreas] ||
-            c[ConditionFlag.Occupied] || c[ConditionFlag.OccupiedInQuestEvent] || c[ConditionFlag.Mounted] ||
-            c[ConditionFlag.InFlight])
-        {
-            plugin.ChatGui.Print("[FriendCompass] 当前状态无法切换分流（请在落地、脱战、非坐骑状态下重试）。");
-            return;
-        }
-
-        try
-        {
-            if (!UIState.Instance()->PublicInstance.IsInstancedArea())
-            {
-                plugin.ChatGui.Print("[FriendCompass] 当前地图没有分流。");
-                return;
-            }
-        }
-        catch (Exception e)
-        {
-            plugin.Log.Warning($"无法读取分流信息：{e.Message}");
-        }
-
-        aetheryte = FindAetheryte();
-        if (aetheryte == null)
-        {
-            plugin.ChatGui.Print("[FriendCompass] 切换分流需要靠近任意以太水晶（约 11 米内），请走近后重试。");
-            return;
-        }
-
+    public bool Start(int instance)
+    {
+        if (Busy) return false;
         targetInstance = instance;
+        if (instance is < 1 or > 9) return Reject("分流编号需在 1-9 之间。");
+        if (plugin.DisabledByDuty) return Reject("副本内无法切换分流。");
+        if (plugin.ObjectTable.LocalPlayer == null || !IsInstancedArea())
+            return Reject("当前地图没有可切换的分流。");
+        if (CurrentInstance() == instance) return Reject($"已经在分流 {instance}。");
+        if (IsBlocked()) return Reject("当前状态无法切换分流（请落地、下坐骑、脱战，并关闭其他对话）。");
+        aetheryte = FindAetheryte();
+        if (aetheryte == null) return Reject("切换分流需要靠近以太水晶（约 11 米内）。");
+
+        LastAttemptFailed = false;
+        LastError = string.Empty;
+        targetInstance = instance;
+        startTerritory = plugin.ClientState.TerritoryType;
+        sawLoading = false;
+        previousMenu = string.Empty;
+        plugin.Log.Information($"分流切换开始：地区={startTerritory} 当前={CurrentInstance()} 目标={instance} 水晶={aetheryte.Name.TextValue}");
         EnterStage(InstanceStage.TargetAetheryte);
+        return true;
     }
 
     public void Cancel()
@@ -130,41 +102,45 @@ public sealed unsafe class InstanceService
         aetheryte = null;
     }
 
-    public Dalamud.Game.ClientState.Objects.Types.IGameObject? FindAetheryte()
+    public void ClearFailure()
     {
-        var localPlayer = plugin.ObjectTable.LocalPlayer;
-        if (localPlayer == null)
-            return null;
+        LastAttemptFailed = false;
+        LastError = string.Empty;
+    }
 
-        Dalamud.Game.ClientState.Objects.Types.IGameObject? best = null;
-        var bestDist = float.MaxValue;
-        foreach (var obj in plugin.ObjectTable)
-        {
-            if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Aetheryte || !obj.IsTargetable)
-                continue;
-            var dist = Vector3.Distance(obj.Position, localPlayer.Position);
-            if (dist < AetheryteMaxDistance && dist < bestDist)
-            {
-                best = obj;
-                bestDist = dist;
-            }
-        }
-        return best;
+    public bool CanStart => !Busy && !plugin.DisabledByDuty && !IsBlocked();
+
+    private bool IsBlocked()
+    {
+        var c = plugin.Condition;
+        return c[ConditionFlag.InCombat] || c[ConditionFlag.Casting] ||
+            c[ConditionFlag.BetweenAreas] || c[ConditionFlag.BetweenAreas51] ||
+            c[ConditionFlag.Occupied] || c[ConditionFlag.OccupiedInQuestEvent] ||
+            c[ConditionFlag.Mounted] || c[ConditionFlag.InFlight];
+    }
+
+    public IGameObject? FindAetheryte()
+    {
+        var local = plugin.ObjectTable.LocalPlayer;
+        if (local == null) return null;
+        return plugin.ObjectTable.Where(obj => obj.ObjectKind == ObjectKind.Aetheryte && obj.IsTargetable)
+            .Where(obj => Vector3.Distance(obj.Position, local.Position) < AetheryteMaxDistance)
+            .OrderBy(obj => Vector3.DistanceSquared(obj.Position, local.Position)).FirstOrDefault();
     }
 
     public void Tick()
     {
         var now = Environment.TickCount64;
-        if (now - lastTick < 500)
-            return;
+        if (!Busy || now - lastTick < 500) return;
         lastTick = now;
-        if (!Busy)
-            return;
-
-        if (now - stageStartTick > StageTimeoutMs)
+        if (plugin.ClientState.TerritoryType != startTerritory)
         {
-            plugin.ChatGui.Print("[FriendCompass] 切换分流超时（请确认站在以太水晶旁且菜单未被占用）。");
-            Cancel();
+            Reject("地区已改变，分流切换已中止。");
+            return;
+        }
+        if (now - stageStartTick > (Stage == InstanceStage.WaitArrival ? 45000 : StageTimeoutMs))
+        {
+            Reject($"切换分流超时：{StatusText}（当前 {CurrentInstance()}，目标 {targetInstance}）。");
             return;
         }
 
@@ -172,154 +148,127 @@ public sealed unsafe class InstanceService
         {
             switch (Stage)
             {
-                case InstanceStage.TargetAetheryte: TickTargetAetheryte(); break;
-                case InstanceStage.Interact: TickInteract(); break;
-                case InstanceStage.WaitMenu: TickWaitMenu(); break;
-                case InstanceStage.PickInstance: TickPickInstance(); break;
+                case InstanceStage.TargetAetheryte:
+                    if (aetheryte == null || !aetheryte.IsTargetable)
+                    { Reject("以太水晶不可用了。"); break; }
+                    plugin.Targets.Target = aetheryte;
+                    EnterStage(InstanceStage.Interact);
+                    break;
+                case InstanceStage.Interact:
+                    if (aetheryte == null) { Reject("以太水晶不可用了。"); break; }
+                    TargetSystem.Instance()->InteractWithObject((GameObject*)aetheryte.Address, false);
+                    EnterStage(InstanceStage.WaitMenu);
+                    break;
+                case InstanceStage.WaitMenu:
+                    if (TryMenu(out _, out _)) EnterStage(InstanceStage.PickTravel);
+                    break;
+                case InstanceStage.PickTravel:
+                    PickTravel();
+                    break;
+                case InstanceStage.PickInstance:
+                    PickInstance();
+                    break;
+                case InstanceStage.WaitArrival:
+                    var loading = plugin.Condition[ConditionFlag.BetweenAreas] || plugin.Condition[ConditionFlag.BetweenAreas51];
+                    sawLoading |= loading;
+                    if (!loading && plugin.ObjectTable.LocalPlayer != null && CurrentInstance() == targetInstance)
+                    {
+                        Stage = InstanceStage.Done;
+                        aetheryte = null;
+                        plugin.Log.Information($"分流切换完成：当前={CurrentInstance()} 目标={targetInstance} 经历加载={sawLoading}");
+                        plugin.ChatGui.Print($"[FriendCompass] 已到达分流 {targetInstance}。");
+                        plugin.Friends.RequestRefresh();
+                    }
+                    break;
             }
         }
-        catch (Exception e)
+        catch (Exception exception)
         {
-            plugin.Log.Warning($"切换分流异常：{e.Message}");
-            plugin.ChatGui.Print("[FriendCompass] 切换分流出错，已中止。");
-            Cancel();
+            plugin.Log.Warning(exception, "分流切换异常");
+            Reject("切换分流异常，已中止，详情已记录到卫月日志。");
         }
+    }
+
+    private void PickTravel()
+    {
+        if (!TryMenu(out var addon, out var entries)) return;
+        var index = Array.FindIndex(entries, InstanceMenu.IsTravelEntry);
+        if (index < 0)
+        {
+            if (entries.Any(text => InstanceMenu.Number(text) != 0))
+                EnterStage(InstanceStage.PickInstance);
+            else Reject("以太水晶菜单中没有“切换副本区”，菜单内容已记录到日志。");
+            return;
+        }
+        previousMenu = string.Join(" | ", entries);
+        Fire(addon, index);
+        EnterStage(InstanceStage.PickInstance);
+    }
+
+    private void PickInstance()
+    {
+        if (!TryMenu(out var addon, out var entries) || string.Join(" | ", entries) == previousMenu) return;
+        availableInstances = entries.Select(InstanceMenu.Number).Where(number => number > 0).Distinct().Order().ToArray();
+        if (availableInstances.Length == 0) return;
+        choicesTerritory = plugin.ClientState.TerritoryType;
+        choicesWorld = (ushort)(plugin.ObjectTable.LocalPlayer?.CurrentWorld.RowId ?? 0);
+        var index = Array.FindIndex(entries, text => InstanceMenu.Number(text) == targetInstance);
+        if (index < 0)
+        {
+            Reject($"分流菜单没有 {targetInstance}；本次菜单编号：{string.Join("、", availableInstances)}。自动尝试已暂停。");
+            return;
+        }
+        Fire(addon, index);
+        plugin.Log.Information($"分流菜单已点击：索引={index} 目标={targetInstance}，等待客户端确认");
+        EnterStage(InstanceStage.WaitArrival);
+    }
+
+    private bool TryMenu(out AtkUnitBase* addon, out string[] entries)
+    {
+        addon = (AtkUnitBase*)plugin.GameGui.GetAddonByName("SelectString").Address;
+        entries = [];
+        if (addon == null || !addon->IsVisible) return false;
+        var popup = &((AddonSelectString*)addon)->PopupMenu.PopupMenu;
+        if (popup->EntryNames == null || popup->EntryCount is < 1 or > 32) return false;
+        entries = new string[popup->EntryCount];
+        for (var i = 0; i < entries.Length; i++)
+        {
+            var ptr = popup->EntryNames[i].Value;
+            if (ptr == null) return false;
+            entries[i] = SeString.Parse(MemoryHelper.ReadRawNullTerminated((nint)ptr)).TextValue;
+        }
+        var signature = string.Join(" | ", entries);
+        if (signature != lastMenu)
+        {
+            lastMenu = signature;
+            menuSamples = 1;
+            plugin.Log.Information($"分流菜单快照：阶段={Stage} 条目={signature}");
+            return false;
+        }
+        return ++menuSamples >= 2;
+    }
+
+    private bool Reject(string message)
+    {
+        LastAttemptFailed = true;
+        LastError = message;
+        plugin.Log.Warning($"分流切换失败：阶段={Stage} 当前={CurrentInstance()} 目标={targetInstance}；{message}");
+        plugin.ChatGui.Print($"[FriendCompass] {message}");
+        Cancel();
+        return false;
     }
 
     private void EnterStage(InstanceStage stage)
     {
         Stage = stage;
         stageStartTick = Environment.TickCount64;
+        lastMenu = string.Empty;
+        menuSamples = 0;
     }
 
-    private void TickTargetAetheryte()
+    private static void Fire(AtkUnitBase* addon, int index)
     {
-        if (aetheryte == null || !aetheryte.IsTargetable)
-        {
-            plugin.ChatGui.Print("[FriendCompass] 以太水晶不可用了，请重试。");
-            Cancel();
-            return;
-        }
-
-        if (plugin.Targets.Target?.Address != aetheryte.Address)
-        {
-            plugin.Targets.Target = aetheryte;
-            return;
-        }
-
-        EnterStage(InstanceStage.Interact);
-    }
-
-    private void TickInteract()
-    {
-        if (aetheryte == null) { Cancel(); return; }
-        if (plugin.Condition[ConditionFlag.OccupiedInQuestEvent])
-        {
-            EnterStage(InstanceStage.WaitMenu);
-            return;
-        }
-
-        // 目标已选中：发起交互打开菜单
-        if (plugin.Targets.Target?.Address != aetheryte.Address)
-        {
-            plugin.Targets.Target = aetheryte;
-            return;
-        }
-        TargetSystem.Instance()->InteractWithObject((GameObject*)aetheryte.Address, false);
-        EnterStage(InstanceStage.WaitMenu);
-    }
-
-    private void TickWaitMenu()
-    {
-        var addon = plugin.GameGui.GetAddonByName("SelectString");
-        if (addon.Address == nint.Zero)
-            return;
-        var unit = (AtkUnitBase*)addon.Address;
-        if (!unit->IsVisible)
-            return;
-        EnterStage(InstanceStage.PickInstance);
-    }
-
-    private void TickPickInstance()
-    {
-        var addon = plugin.GameGui.GetAddonByName("SelectString");
-        if (addon.Address == nint.Zero)
-        {
-            // 菜单被关闭：重新交互
-            EnterStage(InstanceStage.Interact);
-            return;
-        }
-        var selectString = (AddonSelectString*)addon.Address;
-        var popup = &selectString->PopupMenu.PopupMenu;
-
-        var index = -1;
-        var count = Math.Min(popup->EntryCount, 32);
-        for (var i = 0; i < count; i++)
-        {
-            var text = EntryText(popup, i);
-            if (text != null && text.Contains(InstanceNumbers[targetInstance]))
-            {
-                index = i;
-                break;
-            }
-        }
-
-        if (index < 0)
-        {
-            plugin.ChatGui.Print($"[FriendCompass] 菜单中没有分流 {targetInstance}（该分流可能已满或未开放）。");
-            // 关闭菜单
-            Fire((AtkUnitBase*)addon.Address, -1);
-            Cancel();
-            return;
-        }
-
-        Fire((AtkUnitBase*)addon.Address, index);
-        Stage = InstanceStage.Done;
-        plugin.ChatGui.Print($"[FriendCompass] 正在前往分流 {targetInstance}…");
-        plugin.Friends.RequestRefresh(); // 切完刷新好友位置
-        aetheryte = null;
-    }
-
-    private static string? EntryText(PopupMenu* popup, int index)
-    {
-        try
-        {
-            var ptr = popup->EntryNames[index].Value;
-            if (ptr == null)
-                return null;
-
-            // 条目是 SeString（分流数字以图标负载存储），解析后还原为可读文本
-            var seString = SeString.Parse(MemoryHelper.ReadRawNullTerminated((nint)ptr));
-            var sb = new StringBuilder();
-            foreach (var payload in seString.Payloads)
-            {
-                if (payload is TextPayload text)
-                {
-                    sb.Append(text.Text);
-                }
-                else if (payload is IconPayload icon)
-                {
-                    var v = (uint)icon.Icon;
-                    sb.Append((char)(v >= 0xE000 ? v : 0xE000 + v));
-                }
-            }
-            return sb.ToString();
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    /// <summary>向 Addon 发送回调（等效 ECommons Callback.Fire 的 int 参数版本）。</summary>
-    private static void Fire(AtkUnitBase* addon, params int[] values)
-    {
-        var atkValues = stackalloc AtkValue[values.Length];
-        for (var i = 0; i < values.Length; i++)
-        {
-            atkValues[i].Type = AtkValueType.Int;
-            atkValues[i].Int = values[i];
-        }
-        addon->FireCallback((uint)values.Length, atkValues, true);
+        var value = new AtkValue { Type = AtkValueType.Int, Int = index };
+        addon->FireCallback(1, &value, true);
     }
 }

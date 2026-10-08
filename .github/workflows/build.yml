@@ -24,7 +24,7 @@ jobs:
       - name: Download Dalamud runtime
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/stg/latest.zip" -OutFile latest.zip
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ottercorp/dalamud-distrib/main/stg/latest.zip" -OutFile latest.zip
           Expand-Archive -Force latest.zip "dalamud-runtime"
 
       # 新增插件时，在这里追加一个同样的构建步骤即可（插件目录名与 csproj 同名）
@@ -47,6 +47,16 @@ jobs:
         run: dotnet build FriendCompass/FriendCompass.csproj -c Release
 
       # 各插件的打包产物都叫 latest.zip，发布前改名为 <插件名>-latest.zip 避免冲突
+      - name: Validate FriendCompass manifest description
+        shell: pwsh
+        run: |
+          $manifest = Get-Content FriendCompass/bin/Release/FriendCompass.json -Raw | ConvertFrom-Json
+          if (($manifest.Description -split '[ \r\n]+' | Where-Object { $_ }).Count -le 1) { throw "FriendCompass description is too short for Dalamud validation" }
+
+      - name: Run FriendCompass regression checks
+        shell: pwsh
+        run: dotnet run --project Tests/FriendCompass.Checks/FriendCompass.Checks.csproj -c Release
+
       - name: Rename packages
         shell: pwsh
         run: |

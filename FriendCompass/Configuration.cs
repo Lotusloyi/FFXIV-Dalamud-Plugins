@@ -29,6 +29,25 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>追踪的好友跨图 / 来到同图时聊天栏提醒。</summary>
     public bool AlertOnZoneChange { get; set; } = true;
 
+    public bool AlertOnOnlineChange { get; set; } = true;
+
+    public float CompassSize { get; set; } = 160f;
+
+    public float WorldMarkerScale { get; set; } = 1.5f;
+
+    public float MapMarkerScale { get; set; } = 1.5f;
+
+    public bool UsePartyPositions { get; set; } = true;
+
+    /// <summary>当前地图的服务器玩家名单，没有 XYZ 或分流。</summary>
+    public bool UseAreaSearch { get; set; } = true;
+
+    public bool KeepLastKnownPosition { get; set; } = true;
+
+    public int LastKnownPositionSeconds { get; set; } = 120;
+
+    public int FriendRefreshSeconds { get; set; } = 30;
+
     /// <summary>当前追踪的好友（ContentId），0 表示未追踪。</summary>
     public ulong TrackedContentId { get; set; }
 

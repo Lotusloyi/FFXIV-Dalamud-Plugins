@@ -9,15 +9,16 @@ public class MainWindow : Window
 {
     private readonly Plugin plugin;
 
-    private List<FriendSnapshot> friends = [];
     private long lastRefresh;
     private string search = string.Empty;
+    private int selectedInstance = 1;
+    private ulong selectedFriendId;
 
     public MainWindow(Plugin plugin)
         : base("FriendCompass - 好友罗盘", ImGuiWindowFlags.None)
     {
         this.plugin = plugin;
-        Size = new Vector2(560, 460);
+        Size = new Vector2(740, 620);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -28,14 +29,11 @@ public class MainWindow : Window
         {
             lastRefresh = now;
             plugin.DetectLifestream();
-            friends = plugin.Friends.GetFriends();
-            plugin.RefreshTracked();
         }
 
         if (!plugin.LifestreamDetected)
         {
-            ImGui.TextColored(new Vector4(0.9f, 0.75f, 0.3f, 1f),
-                "⚠ 未检测到 Lifestream：跨服自动传送不可用（请在卫月插件列表安装 Lifestream）");
+            ImGui.TextWrapped("未检测到 Lifestream：跨服自动传送不可用");
             ImGui.Separator();
         }
 
@@ -43,13 +41,13 @@ public class MainWindow : Window
 
         if (plugin.DisabledByDuty)
         {
-            ImGui.SameLine();
             ImGui.TextColored(new Vector4(0.9f, 0.6f, 0.2f, 1f), "副本中：指向与标记已禁用");
         }
 
         ImGui.Separator();
         DrawSettings();
         ImGui.Separator();
+        DrawAreaRoster();
         DrawFriendTable();
     }
 
@@ -62,6 +60,12 @@ public class MainWindow : Window
         {
             ImGui.TextDisabled("未追踪好友：在下方列表点「追踪」");
             return;
+        }
+
+        if (selectedFriendId != tracked.ContentId)
+        {
+            selectedFriendId = tracked.ContentId;
+            selectedInstance = (int)plugin.InstanceSwitcher.CurrentInstance() % 9 + 1;
         }
 
         // 传送进行中优先显示进度
@@ -96,40 +100,39 @@ public class MainWindow : Window
         ImGui.SameLine();
         ImGui.TextDisabled($"[{plugin.GetWorldName(tracked.CurrentWorld)} · {plugin.GetJobName(tracked.Job)}]");
 
-        ImGui.SameLine();
-        ImGui.TextDisabled("|");
-        ImGui.SameLine();
-
         if (!tracked.Online)
         {
             ImGui.TextDisabled("离线");
         }
-        else if (plugin.TrackedCharacter != null && plugin.ObjectTable.LocalPlayer != null)
+        else if (plugin.Position is { } position && plugin.ObjectTable.LocalPlayer != null)
         {
-            var dist = Vector3.Distance(plugin.ObjectTable.LocalPlayer.Position, plugin.TrackedCharacter.Position);
-            ImGui.TextColored(new Vector4(0.35f, 0.85f, 0.45f, 1f),
-                $"同图 · 距离 {dist:F0} 米");
+            var dist = Vector3.Distance(plugin.ObjectTable.LocalPlayer.Position, position.Position);
+            ImGui.TextColored(position.Source == PositionSource.LastSeen ?
+                    new Vector4(1f, 0.8f, 0.1f, 1f) : new Vector4(0.1f, 1f, 0.9f, 1f),
+                $"{position.Describe(Environment.TickCount64)} · 距离 {dist:F0} 米");
         }
-        else if (tracked.Location != 0 && tracked.Location == plugin.ClientState.TerritoryType)
+        else if (tracked.Location != 0 && tracked.Location == plugin.ClientState.TerritoryType &&
+                 tracked.CurrentWorld == plugin.ObjectTable.LocalPlayer?.CurrentWorld.RowId)
         {
-            // 同图但好友在约 100 米同步范围外，游戏不提供精确位置——常见原因是分流不同
-            ImGui.TextColored(new Vector4(0.9f, 0.85f, 0.3f, 1f), "同图 · 超出同步范围（约 100 米）");
+            ImGui.TextColored(new Vector4(0.9f, 0.85f, 0.3f, 1f), plugin.TrackedInAreaRoster
+                ? "区域名单已查到好友 · 坐标未同步 · 分流未确认" : "好友列表显示同图 · 暂无坐标 · 分流未确认");
+            ImGui.TextDisabled($"你的当前分流：{plugin.InstanceSwitcher.CurrentInstance()}");
+            ImGui.SetNextItemWidth(110);
+            ImGui.InputInt("目标分流", ref selectedInstance);
+            selectedInstance = Math.Clamp(selectedInstance, 1, 9);
             ImGui.SameLine();
-            ImGui.TextDisabled($"当前分流 {plugin.InstanceSwitcher.CurrentInstance()}");
-            ImGui.SameLine();
-            if (ImGui.SmallButton("切换分流"))
-            {
-                // 一键切到下一个分流，重复点击可逐个尝试直到找到好友
-                var cur = (int)plugin.InstanceSwitcher.CurrentInstance();
-                plugin.InstanceSwitcher.Start(cur is >= 1 and <= 8 ? cur + 1 : 1);
-            }
+            if (ImGui.SmallButton("前往分流")) plugin.InstanceSwitcher.Start(selectedInstance);
+            if (plugin.InstanceSwitcher.AvailableInstances.Count > 0)
+                ImGui.TextDisabled($"最近菜单编号：{string.Join("、", plugin.InstanceSwitcher.AvailableInstances)}");
         }
         else
         {
             ImGui.Text($"位于：{plugin.GetTerritoryName(tracked.Location)}");
         }
 
-        ImGui.SameLine();
+        if (plugin.InstanceSwitcher.LastError.Length > 0)
+            ImGui.TextWrapped(plugin.InstanceSwitcher.LastError);
+
         if (ImGui.SmallButton("传送"))
             plugin.Teleporter.Start(tracked);
         ImGui.SameLine();
@@ -165,11 +168,70 @@ public class MainWindow : Window
         v = config.AlertOnZoneChange;
         if (ImGui.Checkbox("跨图提醒", ref v)) { config.AlertOnZoneChange = v; changed = true; }
 
+        v = config.AlertOnOnlineChange;
+        if (ImGui.Checkbox("全部好友上下线提醒", ref v)) { config.AlertOnOnlineChange = v; changed = true; }
+        ImGui.SameLine();
+        v = config.UsePartyPositions;
+        if (ImGui.Checkbox("使用同图小队坐标", ref v)) { config.UsePartyPositions = v; changed = true; }
+        ImGui.SameLine();
+        v = config.KeepLastKnownPosition;
+        if (ImGui.Checkbox("保留最近位置", ref v)) { config.KeepLastKnownPosition = v; changed = true; }
+        v = config.UseAreaSearch;
+        if (ImGui.Checkbox("查询区域玩家名单", ref v)) { config.UseAreaSearch = v; changed = true; }
+
+        if (ImGui.CollapsingHeader("大小与刷新间隔"))
+        {
+            var compassSize = config.CompassSize;
+            ImGui.SetNextItemWidth(220);
+            if (ImGui.SliderFloat("罗盘直径", ref compassSize, 96f, 280f, "%.0f px"))
+            { config.CompassSize = compassSize; changed = true; }
+            var worldScale = config.WorldMarkerScale;
+            ImGui.SetNextItemWidth(220);
+            if (ImGui.SliderFloat("头顶标记大小", ref worldScale, 0.75f, 3f, "%.2f"))
+            { config.WorldMarkerScale = worldScale; changed = true; }
+            var mapScale = config.MapMarkerScale;
+            ImGui.SetNextItemWidth(220);
+            if (ImGui.SliderFloat("地图标记大小", ref mapScale, 0.75f, 3f, "%.2f"))
+            { config.MapMarkerScale = mapScale; changed = true; }
+            var retention = config.LastKnownPositionSeconds;
+            ImGui.SetNextItemWidth(220);
+            if (ImGui.SliderInt("最近位置保留时间", ref retention, 10, 600, "%d 秒"))
+            { config.LastKnownPositionSeconds = retention; changed = true; }
+            var refresh = config.FriendRefreshSeconds;
+            ImGui.SetNextItemWidth(220);
+            if (ImGui.SliderInt("好友列表刷新间隔", ref refresh, 15, 120, "%d 秒"))
+            { config.FriendRefreshSeconds = refresh; changed = true; }
+        }
+
         if (changed)
             config.Save(plugin.PluginInterface);
     }
 
     // ---------- 好友列表 ----------
+
+    private void DrawAreaRoster()
+    {
+        if (!plugin.Configuration.UseAreaSearch) return;
+        var roster = plugin.AreaSearch.Roster;
+        var now = Environment.TickCount64;
+        var valid = roster.IsCurrent(plugin.CurrentTrackingContext(), now);
+        ImGui.TextDisabled($"已同步角色：{plugin.SynchronizedPlayerCount} · {plugin.AreaSearch.Status}");
+        if (!valid) return;
+        if (!ImGui.TreeNode($"区域玩家：{roster.Players.Count}{(roster.MayBeTruncated ? "+" : "")}##area_roster")) return;
+        ImGui.TextDisabled($"{(now - roster.ObservedAt) / 1000} 秒前更新 · 分流未确认");
+        using (var child = ImRaii.Child("area_roster_rows", new Vector2(0, 130), false))
+        {
+            if (child)
+                foreach (var player in roster.Players.OrderBy(player => player.Name))
+                {
+                    var isFriend = plugin.FriendList.Any(friend => friend.ContentId == player.ContentId ||
+                        (friend.Name == player.Name && friend.HomeWorld == player.HomeWorld));
+                    ImGui.TextColored(isFriend ? new Vector4(0.1f, 1f, 0.9f, 1f) : Vector4.One,
+                        $"{player.Name} [{plugin.GetWorldName(player.HomeWorld)}] · {plugin.GetJobName(player.Job)}");
+                }
+        }
+        ImGui.TreePop();
+    }
 
     private void DrawFriendTable()
     {
@@ -183,10 +245,10 @@ public class MainWindow : Window
         if (ImGui.SmallButton("刷新"))
         {
             plugin.Friends.RequestRefresh();
-            lastRefresh = 0; // 稍后自动重新拉取
+            plugin.AreaSearch.RequestRefresh();
         }
         ImGui.SameLine();
-        ImGui.TextDisabled($"共 {friends.Count} 位好友");
+        ImGui.TextDisabled($"共 {plugin.FriendList.Count} 位好友");
 
         using var table = ImRaii.Table("friend_list", 6,
             ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollY);
@@ -201,13 +263,14 @@ public class MainWindow : Window
         ImGui.TableHeadersRow();
 
         var currentTerritory = plugin.ClientState.TerritoryType;
-        foreach (var friend in friends)
+        foreach (var friend in plugin.FriendList)
         {
             if (search.Length > 0 &&
                 !friend.Name.Contains(search, StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            var sameZone = friend.InZone(currentTerritory);
+            var sameZone = friend.InZone(currentTerritory) &&
+                           friend.CurrentWorld == plugin.ObjectTable.LocalPlayer?.CurrentWorld.RowId;
             ImGui.TableNextRow();
 
             ImGui.TableNextColumn();

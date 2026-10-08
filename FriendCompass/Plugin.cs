@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+using System.Numerics;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects;
 using Dalamud.Game.ClientState.Objects.SubKinds;
@@ -8,6 +8,9 @@ using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using FriendCompass.Windows;
+using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Game.Group;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using Lumina.Excel.Sheets;
 
 namespace FriendCompass;
@@ -36,6 +39,7 @@ public sealed class Plugin : IDalamudPlugin
     public FriendService Friends { get; } = new();
     public TeleportService Teleporter { get; }
     public InstanceService InstanceSwitcher { get; }
+    public AreaSearchService AreaSearch { get; }
 
     private readonly WindowSystem windowSystem = new("FriendCompass");
     public readonly MainWindow MainWindow;
@@ -45,7 +49,6 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<uint, string> territoryNameCache = [];
     private readonly Dictionary<ushort, string> worldNameCache = [];
     private readonly Dictionary<byte, string> jobNameCache = [];
-    private Dictionary<uint, Map>? territoryMapCache;
 
     // ---------- 追踪状态 ----------
     /// <summary>当前生效的追踪目标（手动或自动），由 Framework 定时刷新。</summary>
@@ -54,8 +57,18 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>追踪目标是否真实在同图（对象表中找到了角色）。</summary>
     public IPlayerCharacter? TrackedCharacter { get; private set; }
 
-    private ushort lastTrackedLocation;
-    private bool lastTrackedOnline = true;
+    public TrackedPosition? Position { get; private set; }
+    public IReadOnlyList<FriendSnapshot> FriendList { get; private set; } = [];
+    public int SynchronizedPlayerCount { get; private set; }
+    public bool TrackedInAreaRoster => Configuration.UseAreaSearch && TrackedFriend is { } friend &&
+        AreaSearch.Roster.IsCurrent(CurrentTrackingContext(), Environment.TickCount64) && AreaSearch.Roster.Contains(friend);
+
+    private FriendSnapshot? previousTrackedFriend;
+    private readonly FriendPresenceMonitor presenceMonitor = new();
+    private TrackedPosition? lastKnownPosition;
+    private long lastFriendReadTick;
+    private long lastServerRefreshTick;
+    private bool wasLoggedIn;
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -69,7 +82,8 @@ public sealed class Plugin : IDalamudPlugin
         IChatGui chatGui,
         IPartyList partyList,
         ITargetManager targets,
-        IPluginLog log)
+        IPluginLog log,
+        IGameInteropProvider interop)
     {
         PluginInterface = pluginInterface;
         CommandManager = commandManager;
@@ -87,6 +101,7 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = Configuration.Load(pluginInterface);
         Teleporter = new TeleportService(this);
         InstanceSwitcher = new InstanceService(this);
+        AreaSearch = new AreaSearchService(this, interop);
 
         MainWindow = new MainWindow(this);
         Overlay = new OverlayWindow(this);
@@ -95,17 +110,17 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "打开好友罗盘。/fcompass <名字> 直接追踪该好友。",
+            HelpMessage = "打开好友罗盘。/fcompass <名字> 追踪；/fcompass instance 5 指定分流；/fcompass debug 记录诊断。",
             ShowInHelp = true,
         });
 
-        PluginInterface.UiBuilder.Draw += windowSystem.Draw;
+        PluginInterface.UiBuilder.Draw += Draw;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleMainWindow;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainWindow;
         Framework.Update += OnFrameworkUpdate;
 
         DetectLifestream();
-        Log.Information($"FriendCompass 已加载，输入 /fcompass 打开窗口。Lifestream（跨服传送依赖）：{(LifestreamDetected ? "已检测到" : "未检测到")}");
+        Log.Information($"FriendCompass 1.3.5.0 已加载，输入 /fcompass 打开窗口。Lifestream（跨服传送依赖）：{(LifestreamDetected ? "已检测到" : "未检测到")}");
     }
 
     private void OnCommand(string command, string arguments)
@@ -117,7 +132,21 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        var match = Friends.GetFriends()
+        if (arg.Equals("debug", StringComparison.OrdinalIgnoreCase))
+        {
+            LogTrackingDiagnostics();
+            ChatGui.Print("[FriendCompass] 当前坐标来源、同步玩家与区域名单诊断已写入卫月日志。");
+            return;
+        }
+        if (arg.StartsWith("instance ", StringComparison.OrdinalIgnoreCase))
+        {
+            if (int.TryParse(arg[9..].Trim(), out var instance)) InstanceSwitcher.Start(instance);
+            else ChatGui.Print("[FriendCompass] 用法：/fcompass instance 5");
+            return;
+        }
+
+        RefreshFriendList();
+        var match = FriendList
             .Where(f => f.Name.Contains(arg, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(f => f.Online)
             .FirstOrDefault();
@@ -132,9 +161,20 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Track(FriendSnapshot friend)
     {
+        Teleporter.Cancel();
+        InstanceSwitcher.Cancel();
+        InstanceSwitcher.ClearFailure();
+        ResetAutoSwitch();
+        lastKnownPosition = null;
+        Position = null;
+        TrackedCharacter = null;
+        TrackedFriend = friend;
+        previousTrackedFriend = friend;
         Configuration.TrackedContentId = friend.ContentId;
         Configuration.TrackedName = friend.Name;
         Configuration.Save(PluginInterface);
+        Friends.RequestRefresh();
+        AreaSearch.RequestRefresh();
         RefreshTracked(force: true);
 
         // 点击追踪 = 追踪 + 自动传送到好友所在服务器 / 地图
@@ -149,6 +189,20 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.Save(PluginInterface);
         TrackedFriend = null;
         TrackedCharacter = null;
+        previousTrackedFriend = null;
+        lastKnownPosition = null;
+        Position = null;
+        Overlay.IsOpen = false;
+        Teleporter.Cancel();
+        InstanceSwitcher.Cancel();
+        ResetAutoSwitch();
+    }
+
+    private void Draw()
+    {
+        windowSystem.Draw();
+        // Map/world markers do not depend on the compass window being open.
+        Overlay.DrawMarkers();
     }
 
     public void ToggleMainWindow() => MainWindow.Toggle();
@@ -185,23 +239,79 @@ public sealed class Plugin : IDalamudPlugin
          Condition[ConditionFlag.BoundByDuty56] ||
          Condition[ConditionFlag.BoundByDuty95]);
 
-    // ---------- 定时刷新（2 秒） ----------
+    // ---------- 后台好友刷新与位置采样 ----------
 
     private long lastRefreshTick;
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        if (!ClientState.IsLoggedIn)
+        {
+            AreaSearch.Tick();
+            if (wasLoggedIn)
+            {
+                presenceMonitor.Clear();
+                FriendList = [];
+                TrackedFriend = null;
+                previousTrackedFriend = null;
+                Teleporter.Cancel();
+                InstanceSwitcher.Cancel();
+                ResetAutoSwitch();
+            }
+            wasLoggedIn = false;
+            TrackedCharacter = null;
+            lastKnownPosition = null;
+            Position = null;
+            Overlay.IsOpen = false;
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        if (!wasLoggedIn)
+        {
+            wasLoggedIn = true;
+            lastServerRefreshTick = 0;
+            lastFriendReadTick = 0;
+        }
+
+        if (!Condition[ConditionFlag.BetweenAreas] && !Condition[ConditionFlag.BetweenAreas51])
+        {
+            if (now - lastServerRefreshTick >= Math.Clamp(Configuration.FriendRefreshSeconds, 15, 120) * 1000L)
+            {
+                Friends.RequestRefresh();
+                lastServerRefreshTick = now;
+            }
+            if (now - lastFriendReadTick >= 1000)
+            {
+                lastFriendReadTick = now;
+                RefreshFriendList();
+            }
+        }
+
         // 传送状态机（内部自带 500ms 节流）
         Teleporter.Tick();
         InstanceSwitcher.Tick();
 
         // 限制刷新频率，避免每帧扫描好友列表与对象表
-        var now = Environment.TickCount64;
-        if (now - lastRefreshTick < 1000)
+        if (now - lastRefreshTick < 100)
             return;
         lastRefreshTick = now;
         RefreshTracked();
+        AreaSearch.Tick();
         TickAutoInstanceSwitch();
+    }
+
+    private void RefreshFriendList()
+    {
+        if (!ClientState.IsLoggedIn || !Friends.TryGetFriends(out var friends) || friends.Count == 0)
+            return;
+
+        FriendList = friends;
+        foreach (var (name, online) in presenceMonitor.Update(friends))
+        {
+            if (Configuration.AlertOnOnlineChange)
+                ChatGui.Print($"[FriendCompass] 好友 {name} 已{(online ? "上线" : "下线")}。");
+        }
     }
 
     // ---------- 自动切换分流 ----------
@@ -210,6 +320,9 @@ public sealed class Plugin : IDalamudPlugin
     private int autoSwitchCount;
     private ulong autoSwitchTargetId;
     private bool autoSwitchExhausted;
+    private readonly HashSet<int> visitedInstances = [];
+    private TrackingContext autoSwitchContext;
+    private uint lastAutoObservedInstance;
 
     // 到达新分流后等待对象表与好友数据刷新的 settle 时间
     private const int AutoSwitchSettleMs = 8000;
@@ -229,20 +342,37 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        if (target.ContentId != autoSwitchTargetId)
+        var context = CurrentTrackingContext();
+        if (target.ContentId != autoSwitchTargetId || context.Territory != autoSwitchContext.Territory || context.World != autoSwitchContext.World)
         {
             // 换了追踪目标，重新开始计数
             autoSwitchTargetId = target.ContentId;
             autoSwitchCount = 0;
             autoSwitchExhausted = false;
+            visitedInstances.Clear();
+            autoSwitchContext = context;
+            lastAutoObservedInstance = context.Instance;
+            visitedInstances.Add((int)context.Instance);
             lastAutoSwitchTick = Environment.TickCount64;
         }
 
-        if (TrackedCharacter != null)
+        if (InstanceSwitcher.LastAttemptFailed)
         {
-            // 找到好友了：重置尝试计数（保留目标，避免同图好友短暂超出范围后从头计）
+            autoSwitchExhausted = true;
+            return;
+        }
+        if (lastAutoObservedInstance != context.Instance)
+        {
+            lastAutoObservedInstance = context.Instance;
+            lastAutoSwitchTick = Environment.TickCount64;
+            visitedInstances.Add((int)context.Instance);
+        }
+
+        if (Position is { Source: not PositionSource.LastSeen })
+        {
+            // Received coordinates confirm the current instance; an area roster does not.
             autoSwitchCount = 0;
-            autoSwitchExhausted = false;
+            autoSwitchExhausted = true;
             return;
         }
 
@@ -253,6 +383,10 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (target.CurrentWorld != ObjectTable.LocalPlayer.CurrentWorld.RowId || Position != null ||
+            Condition[ConditionFlag.BetweenAreas] || Condition[ConditionFlag.BetweenAreas51])
+            return;
+
         if (!InstanceService.IsInstancedArea())
             return; // 非分流地图，好友只是距离较远，切分流无意义
 
@@ -260,27 +394,24 @@ public sealed class Plugin : IDalamudPlugin
         if (now - lastAutoSwitchTick < AutoSwitchSettleMs)
             return;
 
-        if (autoSwitchExhausted || autoSwitchCount >= AutoSwitchMaxAttempts)
+        var next = InstanceMenu.Next((int)context.Instance, InstanceSwitcher.AvailableInstances, visitedInstances);
+        if (autoSwitchExhausted || autoSwitchCount >= AutoSwitchMaxAttempts || next == 0)
         {
             if (!autoSwitchExhausted)
             {
                 autoSwitchExhausted = true;
-                ChatGui.Print($"[FriendCompass] 已自动尝试 {AutoSwitchMaxAttempts} 个分流仍未找到 {target.Name}，停止自动切换（可手动点「切换分流」继续尝试）。");
+                ChatGui.Print($"[FriendCompass] 已尝试可用分流，仍没有 {target.Name} 的实时坐标，自动切换暂停。可手动指定分流。");
             }
             return;
         }
 
-        if (InstanceSwitcher.FindAetheryte() == null)
+        if (!InstanceSwitcher.CanStart || InstanceSwitcher.FindAetheryte() == null) return;
+        if (InstanceSwitcher.Start(next))
         {
-            ChatGui.Print("[FriendCompass] 自动切换分流需要靠近任意以太水晶（约 11 米内）。");
-            lastAutoSwitchTick = now; // 8 秒内不重复提示
-            return;
+            visitedInstances.Add(next);
+            lastAutoSwitchTick = now;
+            autoSwitchCount++;
         }
-
-        var cur = (int)InstanceSwitcher.CurrentInstance();
-        InstanceSwitcher.Start(cur is >= 1 and <= 8 ? cur + 1 : 1);
-        lastAutoSwitchTick = now;
-        autoSwitchCount++;
     }
 
     private void ResetAutoSwitch()
@@ -288,66 +419,114 @@ public sealed class Plugin : IDalamudPlugin
         autoSwitchTargetId = 0;
         autoSwitchCount = 0;
         autoSwitchExhausted = false;
+        visitedInstances.Clear();
     }
 
     public void RefreshTracked(bool force = false)
     {
         try
         {
-            var friends = Friends.GetFriends();
-
-            // 手动追踪
-            FriendSnapshot? target = null;
-            if (Configuration.TrackedContentId != 0)
-                target = friends.FirstOrDefault(f => f.ContentId == Configuration.TrackedContentId);
+            var target = Configuration.TrackedContentId == 0 ? null :
+                FriendList.FirstOrDefault(f => f.ContentId == Configuration.TrackedContentId) ?? TrackedFriend;
 
             TrackedFriend = target;
 
-            // 同图时在对象表中按名字找角色
-            TrackedCharacter = null;
-            if (target is { Online: true } && ObjectTable.LocalPlayer != null &&
-                target.Location == ClientState.TerritoryType)
-            {
-                foreach (var obj in ObjectTable)
-                {
-                    if (obj is IPlayerCharacter pc && pc.Name.TextValue == target.Name)
-                    {
-                        TrackedCharacter = pc;
-                        break;
-                    }
-                }
-            }
+            RefreshPosition(target);
 
             // 跨图 / 上下线提醒
-            if (target != null &&
-                (target.Location != lastTrackedLocation || target.Online != lastTrackedOnline || force))
+            if (target != null)
             {
-                if (Configuration.AlertOnZoneChange && !force)
+                if (Configuration.AlertOnZoneChange && !force && target.Online &&
+                    previousTrackedFriend is { Online: true } previous &&
+                    previous.ContentId == target.ContentId &&
+                    (target.Location != previous.Location || target.CurrentWorld != previous.CurrentWorld))
                     AlertZoneChange(target);
-                lastTrackedLocation = target.Location;
-                lastTrackedOnline = target.Online;
+                previousTrackedFriend = target;
             }
 
             // 悬浮窗激活：WindowSystem 只绘制 IsOpen 的窗口，必须在这里管理
             Overlay.IsOpen = !DisabledByDuty &&
-                             target is { Online: true } &&
-                             TrackedCharacter != null;
+                             Configuration.ShowOverlay && Position != null;
         }
-        catch
+        catch (Exception exception)
         {
-            // 忽略单帧异常
+            TrackedCharacter = null;
+            Position = null;
+            Overlay.IsOpen = false;
+            Log.Debug($"好友位置采样失败：{exception.Message}");
         }
+    }
+
+    private unsafe void RefreshPosition(FriendSnapshot? target)
+    {
+        TrackedCharacter = null;
+        Position = null;
+        SynchronizedPlayerCount = ObjectTable.Count(obj => obj is IPlayerCharacter);
+        var local = ObjectTable.LocalPlayer;
+        if (target is not { Online: true } || local == null || DisabledByDuty ||
+            Condition[ConditionFlag.BetweenAreas] || Condition[ConditionFlag.BetweenAreas51])
+        {
+            lastKnownPosition = null;
+            return;
+        }
+
+        var context = CurrentTrackingContext();
+        var now = Environment.TickCount64;
+        // Scan all synchronized objects, with no distance cutoff. ContentId avoids same-name matches.
+        foreach (var obj in ObjectTable)
+        {
+            if (obj is not IPlayerCharacter player || player.Address == nint.Zero)
+                continue;
+            var native = (Character*)player.Address;
+            var matches = native->ContentId != 0 ? native->ContentId == target.ContentId :
+                player.Name.TextValue == target.Name && player.HomeWorld.RowId == target.HomeWorld;
+            if (!matches || !TrackingMath.IsFinite(player.Position))
+                continue;
+
+            TrackedCharacter = player;
+            var height = float.IsFinite(native->Height) ? Math.Clamp(native->Height, 0.8f, 4f) : 2f;
+            Position = new(target.ContentId, player.Position, context, now, PositionSource.Character, height);
+            break;
+        }
+
+        // A loaded ContentId is fresher than the periodically refreshed friend location.
+        if (Position == null &&
+            ((target.CurrentWorld != 0 && target.CurrentWorld != context.World) ||
+             (target.Location != 0 && target.Location != context.Territory)))
+        {
+            lastKnownPosition = null;
+            return;
+        }
+
+        if (Position == null && Configuration.UsePartyPositions)
+        {
+            foreach (var member in PartyList)
+            {
+                if (member.ContentId != target.ContentId || member.Territory.RowId != context.Territory ||
+                    member.Address == nint.Zero)
+                    continue;
+                var native = (PartyMember*)member.Address;
+                // The party packet has its own coordinate-valid flag, separate from loaded characters.
+                if ((native->Flags & 0x04) == 0 || !TrackingMath.IsFinite(member.Position))
+                    continue;
+                Position = new(target.ContentId, member.Position, context, now, PositionSource.Party);
+                break;
+            }
+        }
+
+        if (Position != null)
+            lastKnownPosition = Position;
+        else if (Configuration.KeepLastKnownPosition && lastKnownPosition is { } known &&
+                 known.IsRecent(context, target.ContentId, now, Configuration.LastKnownPositionSeconds))
+            Position = known with { Source = PositionSource.LastSeen };
+        else
+            lastKnownPosition = null;
     }
 
     private void AlertZoneChange(FriendSnapshot friend)
     {
-        if (!friend.Online)
-        {
-            ChatGui.Print($"[FriendCompass] 好友 {friend.Name} 已下线。");
-            return;
-        }
-
-        if (ClientState.TerritoryType != 0 && friend.InZone(ClientState.TerritoryType))
+        if (ClientState.TerritoryType != 0 && friend.InZone(ClientState.TerritoryType) &&
+            ObjectTable.LocalPlayer?.CurrentWorld.RowId == friend.CurrentWorld)
         {
             ChatGui.Print($"[FriendCompass] 好友 {friend.Name} 来到了你所在的地图！");
         }
@@ -356,6 +535,27 @@ public sealed class Plugin : IDalamudPlugin
             var where = GetTerritoryName(friend.Location);
             var world = GetWorldName(friend.CurrentWorld);
             ChatGui.Print($"[FriendCompass] 好友 {friend.Name} 现在位于：{where}（{world}）");
+        }
+    }
+
+    public unsafe TrackingContext CurrentTrackingContext()
+    {
+        var map = AgentMap.Instance();
+        return new(ClientState.TerritoryType, (ushort)(ObjectTable.LocalPlayer?.CurrentWorld.RowId ?? 0),
+            InstanceSwitcher.CurrentInstance(), map == null ? 0 : map->CurrentMapId);
+    }
+
+    private unsafe void LogTrackingDiagnostics()
+    {
+        var target = TrackedFriend;
+        var context = CurrentTrackingContext();
+        var roster = AreaSearch.Roster;
+        Log.Information($"追踪诊断：版本=1.3.5.0 环境={context} 卫月缓存分流={ClientState.Instance} 好友={target?.Name} 好友地区={target?.Location} 好友服务器={target?.CurrentWorld} 同步玩家={SynchronizedPlayerCount} 坐标={Position?.Describe(Environment.TickCount64) ?? "无"} 区域名单有效={roster.IsCurrent(context, Environment.TickCount64)} 区域命中={TrackedInAreaRoster} 搜索状态={AreaSearch.Status} 分流阶段={InstanceSwitcher.Stage}");
+        if (target == null) return;
+        foreach (var player in ObjectTable.OfType<IPlayerCharacter>().Where(player => player.Name.TextValue == target.Name))
+        {
+            var native = (Character*)player.Address;
+            Log.Information($"同名同步对象：姓名={player.Name.TextValue} 出生服={player.HomeWorld.RowId} 目标出生服={target.HomeWorld} ContentId匹配={native->ContentId == target.ContentId} ContentId为空={native->ContentId == 0} 坐标={player.Position}");
         }
     }
 
@@ -421,32 +621,18 @@ public sealed class Plugin : IDalamudPlugin
         return name;
     }
 
-    /// <summary>取区域对应的地图行；多个图层时取第一个。</summary>
-    public Map? GetMapForTerritory(ushort territoryId)
+    public Map? GetMap(uint mapId)
     {
-        if (territoryId == 0)
+        if (mapId == 0)
             return null;
-        territoryMapCache ??= BuildTerritoryMapCache();
-        return territoryMapCache.TryGetValue(territoryId, out var map) ? map : null;
-    }
-
-    private Dictionary<uint, Map> BuildTerritoryMapCache()
-    {
-        var dict = new Dictionary<uint, Map>();
         try
         {
-            foreach (var map in DataManager.GetExcelSheet<Map>())
-            {
-                var terr = map.TerritoryType.RowId;
-                if (terr != 0 && !dict.ContainsKey(terr))
-                    dict[terr] = map;
-            }
+            return DataManager.GetExcelSheet<Map>().GetRow(mapId);
         }
         catch
         {
-            // 留空字典，地图标记功能不可用
+            return null;
         }
-        return dict;
     }
 
     public void Dispose()
@@ -454,7 +640,10 @@ public sealed class Plugin : IDalamudPlugin
         Framework.Update -= OnFrameworkUpdate;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainWindow;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleMainWindow;
-        PluginInterface.UiBuilder.Draw -= windowSystem.Draw;
+        PluginInterface.UiBuilder.Draw -= Draw;
+        Teleporter.Cancel();
+        InstanceSwitcher.Cancel();
+        AreaSearch.Dispose();
         CommandManager.RemoveHandler(CommandName);
         windowSystem.RemoveAllWindows();
     }

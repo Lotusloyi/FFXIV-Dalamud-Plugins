@@ -2,43 +2,36 @@ using FFXIVClientStructs.FFXIV.Client.UI.Info;
 
 namespace FriendCompass;
 
-/// <summary>一条好友信息的快照（从 InfoProxyFriendList 读取）。</summary>
-public sealed class FriendSnapshot
-{
-    public required ulong ContentId;
-    public required string Name;
-    public required ushort HomeWorld;
-    public required ushort CurrentWorld;
-    /// <summary>TerritoryType 行 ID（好友所在区域），0 表示未知 / 被隐藏。传送过程中会被刷新。</summary>
-    public ushort Location;
-    public required byte Job;
-    public required bool Online;
-
-    /// <summary>是否和指定区域在同一图。</summary>
-    public bool InZone(uint territoryId) => Online && Location == territoryId && territoryId != 0;
-}
-
 /// <summary>从客户端好友列表代理读取好友数据。</summary>
 public sealed class FriendService
 {
     public unsafe List<FriendSnapshot> GetFriends()
+        => TryGetFriends(out var friends) ? friends : [];
+
+    public unsafe bool TryGetFriends(out List<FriendSnapshot> list)
     {
-        var list = new List<FriendSnapshot>();
+        list = [];
         try
         {
             var proxy = InfoProxyFriendList.Instance();
             if (proxy == null)
-                return list;
+                return false;
 
             var common = &proxy->InfoProxyCommonList;
+            if (proxy->EntryCount > 200 || (proxy->EntryCount != 0 && common->CharData == null))
+                return false;
             var span = common->CharDataSpan;
             foreach (ref readonly var entry in span)
             {
                 var name = entry.NameString;
-                if (string.IsNullOrEmpty(name))
+                if (string.IsNullOrEmpty(name) || entry.ContentId == 0 || entry.WaitingForFriendListApproval)
                     continue;
 
-                var online = entry.State != InfoProxyCommonList.CharacterData.OnlineStatus.Offline;
+                const InfoProxyCommonList.CharacterData.OnlineStatus offlineStates =
+                    InfoProxyCommonList.CharacterData.OnlineStatus.OfflineExd |
+                    InfoProxyCommonList.CharacterData.OnlineStatus.NotFound |
+                    InfoProxyCommonList.CharacterData.OnlineStatus.WaitingForFriendListApproval;
+                var online = entry.State != 0 && (entry.State & offlineStates) == 0;
                 list.Add(new FriendSnapshot
                 {
                     ContentId = entry.ContentId,
@@ -53,23 +46,31 @@ public sealed class FriendService
         }
         catch
         {
-            // 读取失败（如游戏未完全登录）返回空列表即可
+            list.Clear();
+            return false;
         }
-        return list;
+        return true;
     }
 
+    private long lastRequestTick;
+
     /// <summary>向服务器请求刷新好友列表（填充所在地区等字段）。</summary>
-    public unsafe void RequestRefresh()
+    public unsafe bool RequestRefresh()
     {
+        var now = Environment.TickCount64;
+        if (now - lastRequestTick < 5_000)
+            return false;
+        lastRequestTick = now;
         try
         {
             var proxy = InfoProxyFriendList.Instance();
             if (proxy != null)
-                proxy->RequestData();
+                return proxy->RequestData();
         }
         catch
         {
             // 忽略
         }
+        return false;
     }
 }

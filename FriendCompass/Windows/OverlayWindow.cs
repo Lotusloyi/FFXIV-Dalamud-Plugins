@@ -1,197 +1,217 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
-using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
-using Lumina.Excel.Sheets;
+using SceneCameraManager = FFXIVClientStructs.FFXIV.Client.Graphics.Scene.CameraManager;
 
 namespace FriendCompass.Windows;
 
 public unsafe class OverlayWindow : Window
 {
     private readonly Plugin plugin;
-
-    private static readonly Vector4 ColorMain = new(0.35f, 0.85f, 0.45f, 1f);
-    private static readonly Vector4 ColorWarn = new(0.95f, 0.75f, 0.3f, 1f);
+    private static readonly uint Outline = 0xEE000000;
+    private static readonly uint White = 0xFFFFFFFF;
+    private static readonly uint Cyan = ImGui.ColorConvertFloat4ToU32(new(0.1f, 1f, 0.9f, 1f));
+    private static readonly uint Amber = ImGui.ColorConvertFloat4ToU32(new(1f, 0.8f, 0.1f, 1f));
 
     public OverlayWindow(Plugin plugin)
-        : base("FriendCompassOverlay", ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize
-            | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoBackground
-            | ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.NoNav)
+        : base("FriendCompassOverlay", ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize |
+            ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.NoNav |
+            ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
     {
         this.plugin = plugin;
+        SizeCondition = ImGuiCond.Always;
         IsOpen = false;
+    }
+
+    public override void PreDraw()
+    {
+        var diameter = Math.Clamp(plugin.Configuration.CompassSize, 96f, 280f) * ImGuiHelpers.GlobalScale;
+        var nameWidth = ImGui.CalcTextSize(plugin.TrackedFriend?.Name ?? "").X;
+        var textWidth = ImGui.CalcTextSize("距最近位置 99999 米 · 分流 9").X;
+        Size = new(Math.Max(diameter, Math.Max(nameWidth, textWidth)) + 40f * ImGuiHelpers.GlobalScale,
+            diameter + ImGui.GetTextLineHeightWithSpacing() * 3f + 28f * ImGuiHelpers.GlobalScale);
     }
 
     public override void Draw()
     {
-        // 可见性由 Plugin.RefreshTracked 统一管理（WindowSystem 只绘制 IsOpen 的窗口）
-        var config = plugin.Configuration;
         var target = plugin.TrackedFriend;
-        var character = plugin.TrackedCharacter;
+        var position = plugin.Position;
         var localPlayer = plugin.ObjectTable.LocalPlayer;
-
-        if (target == null || character == null || localPlayer == null)
+        if (plugin.DisabledByDuty || !plugin.Configuration.ShowOverlay ||
+            target == null || position == null || localPlayer == null)
             return;
 
-        var anythingVisible = config.ShowOverlay || config.ShowWorldMarker || config.ShowMapMarker;
-        if (!anythingVisible)
-            return;
-
-        if (config.ShowOverlay)
-            DrawCompass(character, localPlayer);
-
-        var drawList = ImGui.GetForegroundDrawList();
-
-        if (config.ShowWorldMarker)
-            DrawWorldMarker(drawList, character!, target!);
-
-        if (config.ShowMapMarker)
-            DrawMapMarker(drawList, character!, localPlayer);
-    }
-
-    // ---------- 悬浮窗（方向箭头 + 同图好友距离） ----------
-
-    // 鲜艳的罗盘配色
-    private static readonly Vector4 ColorArrow = new(1.0f, 0.55f, 0.05f, 1f);   // 亮橙
-    private static readonly Vector4 ColorArrowOutline = new(0f, 0f, 0f, 0.9f);   // 黑描边
-    private static readonly Vector4 ColorRing = new(1.0f, 0.85f, 0.1f, 1f);      // 亮黄
-
-    private void DrawCompass(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter target,
-        Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter localPlayer)
-    {
-        // 用镜头水平偏航角（Camera.DirH，与角色朝向同一角度约定）计算方位：
-        // 屏幕上方对应镜头朝向，因此屏幕角 = 世界方位角 - 镜头偏航 - 90°
-        // （ImGui 中 0 弧度指向 +X，-90° 指向上方）。比屏幕坐标投影稳定，
-        // 不受悬浮窗位置与好友是否在视锥内的影响。
-        var delta = target.Position - localPlayer.Position;
-        var bearing = MathF.Atan2(delta.X, delta.Z);
-        var cameraManager = CameraManager.Instance();
-        if (cameraManager == null || cameraManager->Camera == null)
-            return;
-        var angle = bearing - cameraManager->Camera->DirH - MathF.PI / 2f;
-
-        var center = ImGui.GetWindowPos() + ImGui.GetWindowSize() / 2f;
+        var diameter = Math.Clamp(plugin.Configuration.CompassSize, 96f, 280f) * ImGuiHelpers.GlobalScale;
+        var start = ImGui.GetCursorScreenPos();
+        var width = ImGui.GetContentRegionAvail().X;
+        var center = start + new Vector2(width / 2f, diameter / 2f);
         var drawList = ImGui.GetWindowDrawList();
-        var colArrow = ImGui.ColorConvertFloat4ToU32(ColorArrow);
-        var colOutline = ImGui.ColorConvertFloat4ToU32(ColorArrowOutline);
-        var colRing = ImGui.ColorConvertFloat4ToU32(ColorRing);
+        var radius = diameter / 2f - 5f * ImGuiHelpers.GlobalScale;
+        var color = position.Source == PositionSource.LastSeen ? Amber : Cyan;
 
-        // 加大箭头：黑色描边打底 + 亮橙填充，保证任何背景下醒目
-        DrawArrow(drawList, center + new Vector2(0, -14f), angle, 34f, colOutline);
-        DrawArrow(drawList, center + new Vector2(0, -14f), angle, 28f, colArrow);
-        drawList.AddCircle(center, 32f, colRing, 0, 2.5f);
+        drawList.AddCircleFilled(center, radius, 0xA6000000, 64);
+        drawList.AddCircle(center, radius, Outline, 64, 7f * ImGuiHelpers.GlobalScale);
+        drawList.AddCircle(center, radius, White, 64, 2f * ImGuiHelpers.GlobalScale);
 
-        var dist = Vector3.Distance(localPlayer.Position, target.Position);
-        var inst = plugin.InstanceSwitcher.CurrentInstance();
-        var text = inst > 0
-            ? $"{target.Name.TextValue}  {dist:F0} 米 · 分流{inst}"
-            : $"{target.Name.TextValue}  {dist:F0} 米";
-        var textSize = ImGui.CalcTextSize(text);
-        drawList.AddText(ImGui.GetFont(), ImGui.GetFontSize() + 2f,
-            center + new Vector2(-textSize.X / 2f + 1f, 24f), colOutline, text);
-        drawList.AddText(ImGui.GetFont(), ImGui.GetFontSize() + 2f,
-            center + new Vector2(-textSize.X / 2f, 23f), colArrow, text);
-    }
-
-    private static void DrawArrow(ImDrawListPtr drawList, Vector2 center, float angle, float size, uint col)
-    {
-        var dir = new Vector2(MathF.Cos(angle), MathF.Sin(angle));
-        var perp = new Vector2(-dir.Y, dir.X);
-        var tip = center + dir * size;
-        var base1 = center - dir * (size * 0.62f) + perp * (size * 0.48f);
-        var base2 = center - dir * (size * 0.62f) - perp * (size * 0.48f);
-        drawList.AddTriangleFilled(tip, base1, base2, col);
-    }
-
-    // ---------- 好友头顶世界标记 ----------
-
-    private void DrawWorldMarker(ImDrawListPtr drawList,
-        Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter character, FriendSnapshot friend)
-    {
-        var gameGui = plugin.GameGui;
-
-        if (!gameGui.WorldToScreen(character.Position, out var feet, out var behind) || behind)
-            return;
-        if (!gameGui.WorldToScreen(character.Position + new Vector3(0, 2.2f, 0), out var head, out _))
-            return;
-
-        var col = ImGui.ColorConvertFloat4ToU32(ColorMain);
-        drawList.AddLine(feet, head, col, 2f);
-
-        // 头顶菱形
-        const float r = 6f;
-        var up = new Vector2(0, r);
-        var right = new Vector2(r, 0);
-        drawList.AddQuadFilled(head + up, head + right, head - up, head - right, col);
-        drawList.AddText(head + new Vector2(9f, -14f), col, friend.Name);
-    }
-
-    // ---------- 野外大地图（AreaMap）标记 ----------
-
-    private void DrawMapMarker(ImDrawListPtr drawList,
-        Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter character,
-        Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter localPlayer)
-    {
-        var territoryId = plugin.ClientState.TerritoryType;
-        if (territoryId == 0)
-            return;
-
-        var map = plugin.GetMapForTerritory((ushort)territoryId);
-        if (map == null)
-            return;
-
-        var addon = plugin.GameGui.GetAddonByName("AreaMap");
-        var addonPtr = addon.Address;
-        if (addonPtr == nint.Zero)
-            return;
-
-        var unit = (AtkUnitBase*)addonPtr;
-        if (!unit->IsVisible)
-            return;
-
-        var areaMap = (AddonAreaMap*)addonPtr;
-        var map2d = areaMap->AreaMap;
-        var comp = map2d.ComponentMap;
-        if (comp == null)
-            return;
-
-        // 大地图标题与当前区域名一致时才绘制（防止浏览其他地图时错位）
-        var titleNode = areaMap->TitleTextNode;
-        if (titleNode != null)
+        // The view matrix supplies the actual camera-right axis, independent of yaw conventions.
+        var cameraManager = SceneCameraManager.Instance();
+        var camera = cameraManager == null ? null : cameraManager->CurrentCamera;
+        if (camera != null && TrackingMath.TryCompassDirection(position.Position - localPlayer.Position,
+                new(camera->ViewMatrix.M11, camera->ViewMatrix.M31), out var direction))
         {
-            var title = titleNode->NodeText.ToString();
-            var zoneName = plugin.GetTerritoryName((ushort)territoryId);
-            if (!title.Contains(zoneName, StringComparison.Ordinal))
-                return;
+            DrawArrow(drawList, center, direction, radius * 0.80f + 4f * ImGuiHelpers.GlobalScale, Outline);
+            DrawArrow(drawList, center, direction, radius * 0.80f, color);
         }
+        else
+            drawList.AddCircleFilled(center, 9f * ImGuiHelpers.GlobalScale, color);
 
-        // 世界坐标 → 地图纹理像素（0~2048）
-        var scale = map.Value.SizeFactor / 100.0;
-        Vector2 ToMapPx(Vector3 w) => new(
-            (float)((w.X + map.Value.OffsetX) * scale),
-            (float)((w.Z + map.Value.OffsetY) * scale));
+        var y = start.Y + diameter + 4f * ImGuiHelpers.GlobalScale;
+        DrawCenteredText(drawList, start.X + width / 2f, y, White, target.Name);
+        y += ImGui.GetTextLineHeightWithSpacing();
+        var distance = Vector3.Distance(localPlayer.Position, position.Position);
+        var instance = plugin.InstanceSwitcher.CurrentInstance();
+        var distanceText = position.Source == PositionSource.LastSeen ? $"距最近位置 {distance:F0} 米" : $"{distance:F0} 米";
+        if (instance > 0)
+            distanceText += $" · 分流 {instance}";
+        DrawCenteredText(drawList, start.X + width / 2f, y, color, distanceText);
+        y += ImGui.GetTextLineHeightWithSpacing();
+        DrawCenteredText(drawList, start.X + width / 2f, y, color, position.Describe(Environment.TickCount64));
+        ImGui.Dummy(new(width, y - start.Y + ImGui.GetTextLineHeightWithSpacing()));
+    }
 
-        var playerPx = ToMapPx(localPlayer.Position);
-        var friendPx = ToMapPx(character.Position);
-
-        // 以游戏绘制的玩家标记为锚点，抵消平移/缩放/朝向误差
-        var markerX = map2d.PlayerMarkerX + (friendPx.X - playerPx.X) * map2d.MapScale;
-        var markerY = map2d.PlayerMarkerY + (friendPx.Y - playerPx.Y) * map2d.MapScale;
-
-        var owner = comp->OwnerNode;
-        if (owner == null)
+    public void DrawMarkers()
+    {
+        var position = plugin.Position;
+        var friend = plugin.TrackedFriend;
+        if (plugin.DisabledByDuty || position == null || friend == null || plugin.ObjectTable.LocalPlayer == null ||
+            plugin.Condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas] ||
+            plugin.Condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas51])
             return;
 
-        var screen = new Vector2(
-            owner->ScreenX + markerX * owner->ScaleX,
-            owner->ScreenY + markerY * owner->ScaleY);
+        var drawList = ImGui.GetForegroundDrawList(ImGuiHelpers.MainViewport);
+        if (plugin.Configuration.ShowWorldMarker && position.Source != PositionSource.LastSeen)
+            DrawWorldMarker(drawList, position, friend);
+        if (plugin.Configuration.ShowMapMarker)
+            DrawMapMarker(drawList, position, friend);
+    }
 
-        var col = ImGui.ColorConvertFloat4ToU32(ColorWarn);
-        drawList.AddCircleFilled(screen, 7f, col);
-        drawList.AddCircle(screen, 7f, ImGui.ColorConvertFloat4ToU32(ColorMain), 0, 2f);
-        drawList.AddText(screen + new Vector2(10f, -8f),
-            ImGui.ColorConvertFloat4ToU32(ColorMain), plugin.TrackedFriend?.Name ?? string.Empty);
+    private static void DrawArrow(ImDrawListPtr drawList, Vector2 center, Vector2 direction, float size, uint color)
+    {
+        var perpendicular = new Vector2(-direction.Y, direction.X);
+        var shoulder = center - direction * (size * 0.05f);
+        drawList.AddTriangleFilled(center + direction * size,
+            shoulder + perpendicular * (size * 0.48f), shoulder - perpendicular * (size * 0.48f), color);
+        drawList.AddQuadFilled(shoulder + perpendicular * (size * 0.18f),
+            shoulder - perpendicular * (size * 0.18f),
+            center - direction * (size * 0.75f) - perpendicular * (size * 0.18f),
+            center - direction * (size * 0.75f) + perpendicular * (size * 0.18f), color);
+    }
+
+    private void DrawWorldMarker(ImDrawListPtr drawList, TrackedPosition position, FriendSnapshot friend)
+    {
+        // WorldToScreen's third output is inView, not behind-camera.
+        if (!plugin.GameGui.WorldToScreen(position.Position, out var feet, out _) ||
+            !plugin.GameGui.WorldToScreen(position.Position + new Vector3(0, position.Height + 0.6f, 0), out var head, out _))
+            return;
+        if (!IsFinite(feet) || !IsFinite(head))
+            return;
+
+        var scale = Math.Clamp(plugin.Configuration.WorldMarkerScale, 0.75f, 3f) * ImGuiHelpers.GlobalScale;
+        drawList.AddLine(feet, head, Outline, 8f * scale);
+        drawList.AddLine(feet, head, White, 5f * scale);
+        drawList.AddLine(feet, head, Cyan, 3f * scale);
+        drawList.AddCircle(feet, 8f * scale, Outline, 24, 6f * scale);
+        drawList.AddCircle(feet, 8f * scale, Cyan, 24, 3f * scale);
+
+        var marker = head - new Vector2(0, 14f * scale);
+        DrawDiamond(drawList, marker, 14f * scale, Outline);
+        DrawDiamond(drawList, marker, 11f * scale, White);
+        DrawDiamond(drawList, marker, 8f * scale, Cyan);
+        var text = position.Source == PositionSource.Party ? $"{friend.Name} · 小队坐标" : friend.Name;
+        DrawLabel(drawList, marker + new Vector2(20f * scale, -ImGui.GetFontSize() / 2f), White, text);
+    }
+
+    private void DrawMapMarker(ImDrawListPtr drawList, TrackedPosition position, FriendSnapshot friend)
+    {
+        var addon = (AddonAreaMap*)plugin.GameGui.GetAddonByName("AreaMap").Address;
+        var agent = AgentMap.Instance();
+        if (addon == null || !addon->IsVisible || agent == null ||
+            agent->SelectedTerritoryId != position.Context.Territory ||
+            agent->SelectedMapId != position.Context.Map)
+            return;
+
+        var map = plugin.GetMap(agent->SelectedMapId);
+        var component = addon->ComponentMap;
+        if (map == null || component == null || component->BaseMapImage == null || component->OwnerNode == null)
+            return;
+
+        // Use the rendered texture node so zoom, panning and all parent/UI scales are included.
+        var image = &component->BaseMapImage->AtkResNode;
+        var owner = &component->OwnerNode->AtkResNode;
+        if (image->Width == 0 || image->Height == 0 || owner->Width == 0 || owner->Height == 0)
+            return;
+        var texture = TrackingMath.WorldToTexture(position.Position, map.Value.SizeFactor, map.Value.OffsetX, map.Value.OffsetY);
+        var local = TrackingMath.TextureToNode(texture, new(image->Width, image->Height));
+        var screen = NodeToScreen(image, local);
+        var clipMin = NodeToScreen(owner, Vector2.Zero);
+        var clipMax = NodeToScreen(owner, new(owner->Width, owner->Height));
+        if (!IsFinite(screen) || !IsFinite(clipMin) || !IsFinite(clipMax) ||
+            screen.X < clipMin.X || screen.Y < clipMin.Y || screen.X > clipMax.X || screen.Y > clipMax.Y)
+            return;
+
+        var scale = Math.Clamp(plugin.Configuration.MapMarkerScale, 0.75f, 3f) * ImGuiHelpers.GlobalScale;
+        var color = position.Source == PositionSource.LastSeen ? Amber : Cyan;
+        drawList.PushClipRect(clipMin, clipMax, true);
+        drawList.AddCircleFilled(screen, 11f * scale, Outline, 32);
+        drawList.AddCircleFilled(screen, 8f * scale, color, 32);
+        drawList.AddCircle(screen, 9f * scale, White, 32, 2f * scale);
+        var text = position.Source == PositionSource.LastSeen ?
+            $"{friend.Name} · {position.Describe(Environment.TickCount64)}" : friend.Name;
+        var labelSize = ImGui.CalcTextSize(text) + new Vector2(8f, 6f);
+        var label = screen + new Vector2(14f * scale, -labelSize.Y / 2f);
+        if (label.X + labelSize.X > clipMax.X)
+            label.X = screen.X - 14f * scale - labelSize.X;
+        label = Vector2.Clamp(label, clipMin, Vector2.Max(clipMin, clipMax - labelSize));
+        DrawLabel(drawList, label + new Vector2(4f, 3f), White, text);
+        drawList.PopClipRect();
+    }
+
+    private static Vector2 NodeToScreen(AtkResNode* node, Vector2 local)
+    {
+        for (var current = node; current != null; current = current->ParentNode)
+        {
+            local = TrackingMath.TransformNodePoint(local, new(current->X, current->Y),
+                new(current->OriginX, current->OriginY), new(current->ScaleX, current->ScaleY), current->Rotation);
+        }
+        return local + ImGuiHelpers.MainViewport.Pos;
+    }
+
+    private static bool IsFinite(Vector2 point) => float.IsFinite(point.X) && float.IsFinite(point.Y);
+
+    private static void DrawDiamond(ImDrawListPtr drawList, Vector2 center, float radius, uint color)
+        => drawList.AddQuadFilled(center + new Vector2(0, -radius), center + new Vector2(radius, 0),
+            center + new Vector2(0, radius), center + new Vector2(-radius, 0), color);
+
+    private static void DrawCenteredText(ImDrawListPtr drawList, float centerX, float y, uint color, string text)
+        => DrawOutlinedText(drawList, new(centerX - ImGui.CalcTextSize(text).X / 2f, y), color, text);
+
+    private static void DrawLabel(ImDrawListPtr drawList, Vector2 position, uint color, string text)
+    {
+        drawList.AddRectFilled(position - new Vector2(4f, 3f),
+            position + ImGui.CalcTextSize(text) + new Vector2(4f, 3f), Outline, 3f);
+        DrawOutlinedText(drawList, position, color, text);
+    }
+
+    private static void DrawOutlinedText(ImDrawListPtr drawList, Vector2 position, uint color, string text)
+    {
+        drawList.AddText(position + new Vector2(-1, -1), Outline, text);
+        drawList.AddText(position + new Vector2(1, -1), Outline, text);
+        drawList.AddText(position + new Vector2(-1, 1), Outline, text);
+        drawList.AddText(position + new Vector2(1, 1), Outline, text);
+        drawList.AddText(position, color, text);
     }
 }
