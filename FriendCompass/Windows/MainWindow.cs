@@ -60,7 +60,7 @@ public class MainWindow : Window
         var tracked = plugin.TrackedFriend;
         if (tracked == null)
         {
-            ImGui.TextDisabled("未追踪好友：在下方列表点「追踪」，或开启自动追踪同图好友");
+            ImGui.TextDisabled("未追踪好友：在下方列表点「追踪」");
             return;
         }
 
@@ -156,9 +156,6 @@ public class MainWindow : Window
         v = config.DisableInDuty;
         if (ImGui.Checkbox("副本内禁用", ref v)) { config.DisableInDuty = v; changed = true; }
 
-        v = config.AutoTrackSameZone;
-        if (ImGui.Checkbox("自动追踪同图好友", ref v)) { config.AutoTrackSameZone = v; changed = true; }
-        ImGui.SameLine();
         v = config.TeleportOnTrack;
         if (ImGui.Checkbox("追踪时自动传送", ref v)) { config.TeleportOnTrack = v; changed = true; }
         ImGui.SameLine();
@@ -167,12 +164,6 @@ public class MainWindow : Window
         ImGui.SameLine();
         v = config.AlertOnZoneChange;
         if (ImGui.Checkbox("跨图提醒", ref v)) { config.AlertOnZoneChange = v; changed = true; }
-        if (config.AlertOnZoneChange)
-        {
-            ImGui.SameLine();
-            v = config.PlaySound;
-            if (ImGui.Checkbox("提示音", ref v)) { config.PlaySound = v; changed = true; }
-        }
 
         if (changed)
             config.Save(plugin.PluginInterface);

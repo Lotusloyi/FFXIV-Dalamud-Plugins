@@ -26,14 +26,8 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>追踪的好友同图但未找到（疑似分流不同）时自动切换分流查找。</summary>
     public bool AutoSwitchInstance { get; set; } = true;
 
-    /// <summary>自动追踪同图（同区域）的在线好友。</summary>
-    public bool AutoTrackSameZone { get; set; }
-
     /// <summary>追踪的好友跨图 / 来到同图时聊天栏提醒。</summary>
     public bool AlertOnZoneChange { get; set; } = true;
-
-    /// <summary>提醒时播放提示音。</summary>
-    public bool PlaySound { get; set; } = true;
 
     /// <summary>当前追踪的好友（ContentId），0 表示未追踪。</summary>
     public ulong TrackedContentId { get; set; }

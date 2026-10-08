@@ -27,7 +27,7 @@
     "Author": "Lotusloyi",
     "Name": "FriendCompass",
     "InternalName": "FriendCompass",
-    "AssemblyVersion": "1.3.2.0",
+    "AssemblyVersion": "1.3.3.0",
     "Punchline": "箭头指向好友的游戏内罗盘",
     "Description": "好友罗盘：查询好友所在地区，悬浮窗箭头实时指向同图好友位置并显示距离，可在野外大地图上标记好友位置，副本内自动禁用。跨服传送依赖 Lifestream 插件。",
     "RepoUrl": "https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins",

@@ -18,9 +18,6 @@ public sealed class Plugin : IDalamudPlugin
 
     private const string CommandName = "/fcompass";
 
-    [DllImport("user32.dll")]
-    private static extern bool MessageBeep(uint uType);
-
     // 构造函数注入的 Dalamud 服务
     public IDalamudPluginInterface PluginInterface { get; }
     public ICommandManager CommandManager { get; }
@@ -304,10 +301,6 @@ public sealed class Plugin : IDalamudPlugin
             if (Configuration.TrackedContentId != 0)
                 target = friends.FirstOrDefault(f => f.ContentId == Configuration.TrackedContentId);
 
-            // 自动追踪同图好友
-            if (target == null && Configuration.AutoTrackSameZone && ClientState.TerritoryType != 0)
-                target = friends.FirstOrDefault(f => f.InZone(ClientState.TerritoryType));
-
             TrackedFriend = target;
 
             // 同图时在对象表中按名字找角色
@@ -357,8 +350,6 @@ public sealed class Plugin : IDalamudPlugin
         if (ClientState.TerritoryType != 0 && friend.InZone(ClientState.TerritoryType))
         {
             ChatGui.Print($"[FriendCompass] 好友 {friend.Name} 来到了你所在的地图！");
-            if (Configuration.PlaySound)
-                MessageBeep(0x00000040);
         }
         else
         {
@@ -457,8 +448,6 @@ public sealed class Plugin : IDalamudPlugin
         }
         return dict;
     }
-
-    public static void PlayAlertSound() => MessageBeep(0x00000040);
 
     public void Dispose()
     {
