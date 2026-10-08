@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Dalamud.CN.NET.Sdk/15.0.0">
+
+    <PropertyGroup>
+        <Version>1.0.0.0</Version>
+        <Name>FriendCompass</Name>
+        <Authors>Lotusloyi</Authors>
+        <Author>Lotusloyi</Author>
+        <Description>好友罗盘：查询好友所在地区，悬浮窗箭头实时指向同图好友位置并显示距离，可在野外大地图上标记好友位置，副本内自动禁用。</Description>
+        <Punchline>箭头指向好友的游戏内罗盘</Punchline>
+        <RepositoryUrl>https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins</RepositoryUrl>
+        <RepoUrl>https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins</RepoUrl>
+        <PackageProjectUrl>https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins</PackageProjectUrl>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <Tags>friend;compass;tracker;map;arrow;ff14;dalamud;plugin</Tags>
+        <LangVersion>latest</LangVersion>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    </PropertyGroup>
+
+</Project>

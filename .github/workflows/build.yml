@@ -40,12 +40,19 @@ jobs:
           DALAMUD_HOME: ${{ github.workspace }}\dalamud-runtime
         run: dotnet build FishClock/FishClock.csproj -c Release
 
+      - name: Build FriendCompass
+        shell: pwsh
+        env:
+          DALAMUD_HOME: ${{ github.workspace }}\dalamud-runtime
+        run: dotnet build FriendCompass/FriendCompass.csproj -c Release
+
       # 各插件的打包产物都叫 latest.zip，发布前改名为 <插件名>-latest.zip 避免冲突
       - name: Rename packages
         shell: pwsh
         run: |
           Copy-Item FateTracker/bin/Release/FateTracker/latest.zip FateTracker-latest.zip
           Copy-Item FishClock/bin/Release/FishClock/latest.zip FishClock-latest.zip
+          Copy-Item FriendCompass/bin/Release/FriendCompass/latest.zip FriendCompass-latest.zip
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -54,6 +61,7 @@ jobs:
           path: |
             FateTracker-latest.zip
             FishClock-latest.zip
+            FriendCompass-latest.zip
           # 新增插件后追加其 <插件名>-latest.zip 路径
 
       - name: Create GitHub Release
@@ -63,4 +71,5 @@ jobs:
           files: |
             FateTracker-latest.zip
             FishClock-latest.zip
+            FriendCompass-latest.zip
           generate_release_notes: true
