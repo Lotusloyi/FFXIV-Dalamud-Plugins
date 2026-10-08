@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Dalamud.CN.NET.Sdk/15.0.0">
+
+    <PropertyGroup>
+        <Version>1.0.0.0</Version>
+        <Name>FishClock</Name>
+        <Authors>Lotusloyi</Authors>
+        <Author>Lotusloyi</Author>
+        <Description>游戏内钓鱼时钟：实时显示各地鱼类开放时间窗口与天气条件、当前地图天气预报，窗口开启时自动提醒。数据来源于鱼糕（fish.ffmomola.com）。</Description>
+        <Punchline>游戏内的钓鱼时钟与天气预报</Punchline>
+        <RepositoryUrl>https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins</RepositoryUrl>
+        <RepoUrl>https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins</RepoUrl>
+        <PackageProjectUrl>https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins</PackageProjectUrl>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <Tags>fishing;fish;clock;weather;ff14;dalamud;plugin</Tags>
+        <LangVersion>latest</LangVersion>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <EmbeddedResource Include="Data\fishdata.json.gz" />
+    </ItemGroup>
+
+</Project>
