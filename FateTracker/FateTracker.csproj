@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Dalamud.CN.NET.Sdk/15.0.0">
+
+    <PropertyGroup>
+        <Version>1.0.1.0</Version>
+        <Name>FateTracker</Name>
+        <Authors>Lotusloyi</Authors>
+        <Author>Lotusloyi</Author>
+        <Product>FateTracker</Product>
+        <Description>一款简洁的 FATE 追踪器：实时显示当前地图的 FATE 列表（进度 / 剩余时间 / 距离），并可在新 FATE 出现时发送提醒。</Description>
+        <Punchline>简洁的 FATE 追踪与提醒工具</Punchline>
+        <RepositoryUrl>https://github.com/Lotusloyi/FateTracker</RepositoryUrl>
+        <RepoUrl>https://github.com/Lotusloyi/FateTracker</RepoUrl>
+        <PackageProjectUrl>https://github.com/Lotusloyi/FateTracker</PackageProjectUrl>
+        <Tags>fate;tracker;ff14;dalamud;plugin</Tags>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <LangVersion>latest</LangVersion>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+</Project>

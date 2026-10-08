@@ -1,0 +1,12 @@
+# .NET 构建产物
+bin/
+obj/
+*.user
+
+# IDE
+.vs/
+.idea/
+*.suo
+
+# 发布产物
+*.zip
