@@ -27,14 +27,14 @@
     "Author": "Lotusloyi",
     "Name": "FriendCompass",
     "InternalName": "FriendCompass",
-    "AssemblyVersion": "1.3.5.0",
+    "AssemblyVersion": "1.3.6.0",
     "Punchline": "好友罗盘：箭头指向同图好友",
-    "Description": "FriendCompass 好友罗盘：查询好友地区、服务器、职业；同图显示方向、距离、头顶标记与地图标记；支持分流切换、区域玩家名单和上下线提醒。跨服传送依赖 Lifestream 插件。",
+    "Description": "FriendCompass 好友罗盘：按 DR 周边玩家的原生角色范围追踪好友，无固定米数限制；显示方向、距离、连线、屏幕边缘及地图标记；支持分流切换、区域名单和上下线提醒。跨服传送依赖 Lifestream 插件。",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "RepoUrl": "https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins",
-    "DownloadLinkInstall": "https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins/releases/download/v1.3.5/FriendCompass-latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins/releases/download/v1.3.5/FriendCompass-latest.zip",
+    "DownloadLinkInstall": "https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins/releases/download/v1.3.6/FriendCompass-latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Lotusloyi/FFXIV-Dalamud-Plugins/releases/download/v1.3.6/FriendCompass-latest.zip",
     "DownloadLinkCount": 0
   }
 ]
