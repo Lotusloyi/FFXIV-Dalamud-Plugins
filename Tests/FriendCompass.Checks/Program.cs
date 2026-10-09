@@ -35,6 +35,17 @@ Check(!TrackingMath.TryCompassDirection(new(0, 4, 0), Vector2.UnitX, out _), "Ve
 Check(!TrackingMath.TryCompassDirection(new(float.NaN, 0, 0), Vector2.UnitX, out _), "Invalid coordinates");
 Check(!TrackingMath.TryCompassDirection(Vector3.One, Vector2.Zero, out _), "Invalid camera");
 
+Check(TrackingMath.TryEdgeMarker(Vector2.UnitX, new(100, 200), new(1920, 1080), 24, out var rightEdge) &&
+    rightEdge == new Vector2(1996, 740), "Offscreen right marker stays inside offset viewport");
+Check(TrackingMath.TryEdgeMarker(-Vector2.UnitY, Vector2.Zero, new(1920, 1080), 24, out var topEdge) &&
+    topEdge == new Vector2(960, 24), "Offscreen top marker");
+Check(TrackingMath.TryEdgeMarker(new(-10, 10), Vector2.Zero, new(1920, 1080), 24, out var diagonalEdge) &&
+    diagonalEdge == new Vector2(444, 1056), "Offscreen diagonal marker preserves bearing");
+Check(TrackingMath.TryEdgeMarker(Vector2.UnitX, Vector2.Zero, new(320, 240), 1000, out var smallEdge) &&
+    smallEdge.X >= 0 && smallEdge.X <= 320, "Large UI scale does not place marker outside small viewport");
+Check(!TrackingMath.TryEdgeMarker(Vector2.Zero, Vector2.Zero, new(1920, 1080), 24, out _), "Invalid edge direction");
+Check(!TrackingMath.TryEdgeMarker(new(float.NaN, 1), Vector2.Zero, new(1920, 1080), 24, out _), "Nonfinite edge direction");
+
 Check(TrackingMath.WorldToTexture(Vector3.Zero, 100, 0, 0) == new Vector2(1024, 1024), "Map center");
 Check(TrackingMath.WorldToTexture(new(-1024, 0, -1024), 100, 0, 0) == Vector2.Zero, "Map northwest");
 Check(TrackingMath.WorldToTexture(new(1024, 0, 1024), 100, 0, 0) == new Vector2(2048), "Map southeast");
@@ -67,6 +78,20 @@ FriendSnapshot Friend(ulong id, bool online) => new()
     ContentId = id, Name = $"Friend {id}", HomeWorld = 21, CurrentWorld = 21,
     Location = 100, Job = 19, Online = online,
 };
+
+var tracked = Friend(42, true);
+var distant = new NearbyPlayer((nint)1, 42, "Friend 42", 21, new(388, 0, 0), 2, true);
+Check(NearbyPlayerMatcher.Find([distant], tracked) == distant, "DR native player at 388m can be matched");
+var farAcrossMap = distant with { Position = new(1500, 0, 0) };
+Check(NearbyPlayerMatcher.Find([farAcrossMap], tracked) == farAcrossMap, "No artificial 400m cutoff");
+var nameFallback = distant with { ContentId = 99 };
+Check(NearbyPlayerMatcher.Find([nameFallback], tracked) == nameFallback, "Name and home world recover differing ID");
+Check(NearbyPlayerMatcher.Find([nameFallback with { ContentId = 0 }], tracked) != null, "Name fallback recovers missing ID");
+Check(NearbyPlayerMatcher.Find([nameFallback with { HomeWorld = 22 }], tracked) == null, "Same name on another home world rejected");
+Check(NearbyPlayerMatcher.Find([nameFallback with { Name = "Friend 420" }], tracked) == null, "Partial name rejected");
+Check(NearbyPlayerMatcher.Find([nameFallback, distant], tracked) == distant, "ContentId match outranks earlier name fallback");
+Check(NearbyPlayerMatcher.Find([distant], Friend(42, false)) == distant, "Live player not hidden by stale offline status");
+Check(NearbyPlayerMatcher.Find([], tracked) == null, "Missing native and object-table player has no fabricated coordinates");
 
 var monitor = new FriendPresenceMonitor();
 Check(monitor.Update([Friend(1, true), Friend(2, false)]).Count == 0, "Initial baseline has no alerts");

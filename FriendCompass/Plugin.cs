@@ -65,6 +65,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private FriendSnapshot? previousTrackedFriend;
     private readonly FriendPresenceMonitor presenceMonitor = new();
+    private readonly NearbyPlayerScanner nearbyPlayers = new();
     private TrackedPosition? lastKnownPosition;
     private long lastFriendReadTick;
     private long lastServerRefreshTick;
@@ -259,6 +260,8 @@ public sealed class Plugin : IDalamudPlugin
                 ResetAutoSwitch();
             }
             wasLoggedIn = false;
+            nearbyPlayers.Clear();
+            SynchronizedPlayerCount = 0;
             TrackedCharacter = null;
             lastKnownPosition = null;
             Position = null;
@@ -461,10 +464,19 @@ public sealed class Plugin : IDalamudPlugin
     {
         TrackedCharacter = null;
         Position = null;
-        SynchronizedPlayerCount = ObjectTable.Count(obj => obj is IPlayerCharacter);
         var local = ObjectTable.LocalPlayer;
-        if (target is not { Online: true } || local == null || DisabledByDuty ||
+        if (local == null || DisabledByDuty ||
             Condition[ConditionFlag.BetweenAreas] || Condition[ConditionFlag.BetweenAreas51])
+        {
+            nearbyPlayers.Clear();
+            SynchronizedPlayerCount = 0;
+            lastKnownPosition = null;
+            return;
+        }
+
+        nearbyPlayers.Scan(ObjectTable, local.Address);
+        SynchronizedPlayerCount = nearbyPlayers.Players.Count;
+        if (target == null)
         {
             lastKnownPosition = null;
             return;
@@ -472,21 +484,18 @@ public sealed class Plugin : IDalamudPlugin
 
         var context = CurrentTrackingContext();
         var now = Environment.TickCount64;
-        // Scan all synchronized objects, with no distance cutoff. ContentId avoids same-name matches.
-        foreach (var obj in ObjectTable)
+        var player = NearbyPlayerMatcher.Find(nearbyPlayers.Players, target);
+        if (player != null)
         {
-            if (obj is not IPlayerCharacter player || player.Address == nint.Zero)
-                continue;
-            var native = (Character*)player.Address;
-            var matches = native->ContentId != 0 ? native->ContentId == target.ContentId :
-                player.Name.TextValue == target.Name && player.HomeWorld.RowId == target.HomeWorld;
-            if (!matches || !TrackingMath.IsFinite(player.Position))
-                continue;
+            TrackedCharacter = ObjectTable.CreateObjectReference(player.Address) as IPlayerCharacter;
+            Position = new(target.ContentId, player.Position, context, now, PositionSource.Character, player.Height);
+        }
 
-            TrackedCharacter = player;
-            var height = float.IsFinite(native->Height) ? Math.Clamp(native->Height, 0.8f, 4f) : 2f;
-            Position = new(target.ContentId, player.Position, context, now, PositionSource.Character, height);
-            break;
+        // A live character also takes precedence over a stale offline friend-list response.
+        if (Position == null && !target.Online)
+        {
+            lastKnownPosition = null;
+            return;
         }
 
         // A loaded ContentId is fresher than the periodically refreshed friend location.
@@ -550,12 +559,15 @@ public sealed class Plugin : IDalamudPlugin
         var target = TrackedFriend;
         var context = CurrentTrackingContext();
         var roster = AreaSearch.Roster;
-        Log.Information($"追踪诊断：版本=1.3.5.0 环境={context} 卫月缓存分流={ClientState.Instance} 好友={target?.Name} 好友地区={target?.Location} 好友服务器={target?.CurrentWorld} 同步玩家={SynchronizedPlayerCount} 坐标={Position?.Describe(Environment.TickCount64) ?? "无"} 区域名单有效={roster.IsCurrent(context, Environment.TickCount64)} 区域命中={TrackedInAreaRoster} 搜索状态={AreaSearch.Status} 分流阶段={InstanceSwitcher.Stage}");
+        var local = ObjectTable.LocalPlayer;
+        var farthest = local == null || nearbyPlayers.Players.Count == 0 ? 0 :
+            nearbyPlayers.Players.Max(player => Vector3.Distance(local.Position, player.Position));
+        Log.Information($"追踪诊断：版本=1.3.6.0 环境={context} 卫月缓存分流={ClientState.Instance} 好友={target?.Name} 好友地区={target?.Location} 好友服务器={target?.CurrentWorld} 同步玩家={SynchronizedPlayerCount} 原生角色={nearbyPlayers.NativeCount} 对象表玩家={nearbyPlayers.ObjectTableCount} 最远玩家={farthest:F0}米 坐标={Position?.Describe(Environment.TickCount64) ?? "无"} 区域名单有效={roster.IsCurrent(context, Environment.TickCount64)} 区域命中={TrackedInAreaRoster} 搜索状态={AreaSearch.Status} 分流阶段={InstanceSwitcher.Stage}");
         if (target == null) return;
-        foreach (var player in ObjectTable.OfType<IPlayerCharacter>().Where(player => player.Name.TextValue == target.Name))
+        foreach (var player in nearbyPlayers.Players.Where(player => player.Name == target.Name))
         {
-            var native = (Character*)player.Address;
-            Log.Information($"同名同步对象：姓名={player.Name.TextValue} 出生服={player.HomeWorld.RowId} 目标出生服={target.HomeWorld} ContentId匹配={native->ContentId == target.ContentId} ContentId为空={native->ContentId == 0} 坐标={player.Position}");
+            var distance = local == null ? 0 : Vector3.Distance(local.Position, player.Position);
+            Log.Information($"同名同步对象：姓名={player.Name} 出生服={player.HomeWorld} 目标出生服={target.HomeWorld} ContentId匹配={player.ContentId == target.ContentId} ContentId为空={player.ContentId == 0} 原生角色={player.FromCharacterManager} 距离={distance:F0}米 坐标={player.Position}");
         }
     }
 

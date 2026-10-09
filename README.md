@@ -8,7 +8,7 @@
 | ---- | ---- | ---- | -------- |
 | [FateTracker](FateTracker/) | 简洁的 FATE 追踪器：实时显示当前地图 FATE 的名称 / 等级 / 进度 / 剩余时间 / 距离，新 FATE 出现时聊天栏提醒 + 可选提示音 | `/fate` | [v1.0.1](../../releases/tag/v1.0.1) |
 | [FishClock](FishClock/) | 游戏内钓鱼时钟：实时显示限时鱼 / 天气鱼的开放窗口与倒计时、当前地图天气预报，窗口开启自动提醒（数据来自鱼糕） | `/fishclock` | [v1.1.0](../../releases/tag/v1.1.0) |
-| [FriendCompass](FriendCompass/) | 好友罗盘：查询好友地区、服务器、职业；同图显示方向、距离、头顶标记与地图标记；支持分流切换、区域玩家名单和上下线提醒（跨服传送需 [Lifestream](https://github.com/NightmareXIV/Lifestream)） | `/fcompass` | [v1.3.5](../../releases/tag/v1.3.5) |
+| [FriendCompass](FriendCompass/) | 好友罗盘：按 DR 周边玩家的原生角色范围追踪好友，显示方向、距离、连线、屏幕边缘及地图标记；支持分流切换和上下线提醒（跨服传送需 [Lifestream](https://github.com/NightmareXIV/Lifestream)） | `/fcompass` | [v1.3.6](../../releases/tag/v1.3.6) |
 
 ## 安装方法（所有插件通用）
 

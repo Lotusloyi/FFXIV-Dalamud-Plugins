@@ -100,16 +100,16 @@ public class MainWindow : Window
         ImGui.SameLine();
         ImGui.TextDisabled($"[{plugin.GetWorldName(tracked.CurrentWorld)} · {plugin.GetJobName(tracked.Job)}]");
 
-        if (!tracked.Online)
-        {
-            ImGui.TextDisabled("离线");
-        }
-        else if (plugin.Position is { } position && plugin.ObjectTable.LocalPlayer != null)
+        if (plugin.Position is { } position && plugin.ObjectTable.LocalPlayer != null)
         {
             var dist = Vector3.Distance(plugin.ObjectTable.LocalPlayer.Position, position.Position);
             ImGui.TextColored(position.Source == PositionSource.LastSeen ?
                     new Vector4(1f, 0.8f, 0.1f, 1f) : new Vector4(0.1f, 1f, 0.9f, 1f),
                 $"{position.Describe(Environment.TickCount64)} · 距离 {dist:F0} 米");
+        }
+        else if (!tracked.Online)
+        {
+            ImGui.TextDisabled("离线");
         }
         else if (tracked.Location != 0 && tracked.Location == plugin.ClientState.TerritoryType &&
                  tracked.CurrentWorld == plugin.ObjectTable.LocalPlayer?.CurrentWorld.RowId)

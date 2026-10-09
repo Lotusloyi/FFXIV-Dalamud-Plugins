@@ -113,14 +113,49 @@ public unsafe class OverlayWindow : Window
 
     private void DrawWorldMarker(ImDrawListPtr drawList, TrackedPosition position, FriendSnapshot friend)
     {
-        // WorldToScreen's third output is inView, not behind-camera.
-        if (!plugin.GameGui.WorldToScreen(position.Position, out var feet, out _) ||
-            !plugin.GameGui.WorldToScreen(position.Position + new Vector3(0, position.Height + 0.6f, 0), out var head, out _))
-            return;
-        if (!IsFinite(feet) || !IsFinite(head))
-            return;
-
+        var local = plugin.ObjectTable.LocalPlayer;
+        if (local == null) return;
+        var viewport = ImGuiHelpers.MainViewport;
         var scale = Math.Clamp(plugin.Configuration.WorldMarkerScale, 0.75f, 3f) * ImGuiHelpers.GlobalScale;
+        var feetInFront = plugin.GameGui.WorldToScreen(position.Position, out var feet, out var feetInView);
+        var headInFront = plugin.GameGui.WorldToScreen(position.Position + new Vector3(0, position.Height + 0.6f, 0),
+            out var head, out _);
+        var distance = Vector3.Distance(local.Position, position.Position);
+        var text = $"{friend.Name} · {distance:F0} 米";
+        if (position.Source == PositionSource.Party) text += " · 小队坐标";
+
+        if (!plugin.GameGui.WorldToScreen(local.Position, out var start, out _) || !IsFinite(start))
+            start = viewport.Pos + new Vector2(viewport.Size.X / 2f, viewport.Size.Y - 16f * scale);
+
+        drawList.PushClipRect(viewport.Pos, viewport.Pos + viewport.Size, true);
+        if (!feetInFront || !feetInView || !headInFront || !IsFinite(feet) || !IsFinite(head))
+        {
+            var direction = feet - (viewport.Pos + viewport.Size / 2f);
+            if (!feetInFront || !IsFinite(direction))
+            {
+                var manager = SceneCameraManager.Instance();
+                var camera = manager == null ? null : manager->CurrentCamera;
+                if (camera == null || !TrackingMath.TryCompassDirection(position.Position - local.Position,
+                        new(camera->ViewMatrix.M11, camera->ViewMatrix.M31), out direction))
+                {
+                    drawList.PopClipRect();
+                    return;
+                }
+            }
+            if (TrackingMath.TryEdgeMarker(direction, viewport.Pos, viewport.Size, 24f * scale, out var edge))
+            {
+                DrawConnection(drawList, start, edge, scale);
+                DrawArrow(drawList, edge, Vector2.Normalize(direction), 15f * scale, Outline);
+                DrawArrow(drawList, edge, Vector2.Normalize(direction), 11f * scale, Cyan);
+                DrawViewportLabel(drawList, edge + new Vector2(22f * scale, 0), text, scale);
+            }
+            drawList.PopClipRect();
+            return;
+        }
+
+        DrawConnection(drawList, start, feet, scale);
+        // Keep the column readable even when perspective makes the character only a few pixels tall.
+        head.Y = Math.Min(head.Y, feet.Y - 64f * scale);
         drawList.AddLine(feet, head, Outline, 8f * scale);
         drawList.AddLine(feet, head, White, 5f * scale);
         drawList.AddLine(feet, head, Cyan, 3f * scale);
@@ -131,8 +166,23 @@ public unsafe class OverlayWindow : Window
         DrawDiamond(drawList, marker, 14f * scale, Outline);
         DrawDiamond(drawList, marker, 11f * scale, White);
         DrawDiamond(drawList, marker, 8f * scale, Cyan);
-        var text = position.Source == PositionSource.Party ? $"{friend.Name} · 小队坐标" : friend.Name;
-        DrawLabel(drawList, marker + new Vector2(20f * scale, -ImGui.GetFontSize() / 2f), White, text);
+        DrawViewportLabel(drawList, marker + new Vector2(20f * scale, -ImGui.GetFontSize() / 2f), text, scale);
+        drawList.PopClipRect();
+    }
+
+    private static void DrawConnection(ImDrawListPtr drawList, Vector2 start, Vector2 end, float scale)
+    {
+        drawList.AddLine(start, end, Outline, 5f * scale);
+        drawList.AddLine(start, end, Cyan, 3f * scale);
+    }
+
+    private static void DrawViewportLabel(ImDrawListPtr drawList, Vector2 position, string text, float scale)
+    {
+        var viewport = ImGuiHelpers.MainViewport;
+        var padding = new Vector2(8f * scale);
+        var min = viewport.Pos + padding;
+        var max = Vector2.Max(min, viewport.Pos + viewport.Size - ImGui.CalcTextSize(text) - padding);
+        DrawLabel(drawList, Vector2.Clamp(position, min, max), White, text);
     }
 
     private void DrawMapMarker(ImDrawListPtr drawList, TrackedPosition position, FriendSnapshot friend)

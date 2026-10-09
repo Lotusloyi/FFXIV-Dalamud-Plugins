@@ -12,5 +12,6 @@
     <Compile Include="../../FriendCompass/FriendPresenceMonitor.cs" Link="FriendPresenceMonitor.cs" />
     <Compile Include="../../FriendCompass/InstanceMenu.cs" Link="InstanceMenu.cs" />
     <Compile Include="../../FriendCompass/AreaRoster.cs" Link="AreaRoster.cs" />
+    <Compile Include="../../FriendCompass/NearbyPlayer.cs" Link="NearbyPlayer.cs" />
   </ItemGroup>
 </Project>
